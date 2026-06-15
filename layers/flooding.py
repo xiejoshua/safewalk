@@ -2,18 +2,20 @@
 
 Data source: FEMA National Flood Hazard Layer (NFHL) REST API
              Layer 28 — Special Flood Hazard Areas (SFHA)
+             Queried for Clayton County / Gillem Corridor bbox at runtime.
 
-Method: query SFHA polygons for the Atlanta bbox at runtime, intersect with
-        segment geometries, return True for any segment that overlaps a flood zone.
+Method: Fetch SFHA polygons, intersect with segment geometries, return True
+        for any segment that overlaps a flood zone.
 
 NOTE: NFHL captures riverine and coastal flood zones (100-year/500-year) but
       does NOT capture urban pluvial (flash) flooding from impervious surface
-      runoff — the primary flood risk for Atlanta pedestrians. Treat this as a
-      directional signal only; a False result does not mean no flood risk.
+      runoff — the primary flood risk for Atlanta-area pedestrians after heavy
+      rain. Treat this as a directional signal only; False does not mean no
+      flood risk.
 
 Null policy: API unreachable or empty response → all False
-             (absence of data treated as unknown, not safe; False is conservative
-             since the module is boolean — callers should weight accordingly)
+             (unknown flood risk treated conservatively as no recorded zone;
+             callers should weight flooding as supplemental, not blocking)
 """
 from __future__ import annotations
 
@@ -24,9 +26,12 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# Clayton County bounds: (min_lon, min_lat, max_lon, max_lat)
+_CLAYTON_BBOX = "-84.5,33.5,-84.2,33.8"
+
 _NFHL_URL = (
     "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query"
-    "?geometry=-84.6,33.6,-84.2,33.9"
+    f"?geometry={_CLAYTON_BBOX}"
     "&geometryType=esriGeometryEnvelope"
     "&inSR=4326"
     "&spatialRel=esriSpatialRelIntersects"
@@ -47,7 +52,7 @@ def _fetch_flood_zones() -> gpd.GeoDataFrame | None:
 
         gdf = gpd.read_file(resp.text, driver="GeoJSON")
         if gdf.empty:
-            logger.warning("flooding.py: NFHL returned 0 flood zone features for Atlanta bbox")
+            logger.warning("flooding.py: NFHL returned 0 flood zone features for Clayton County bbox")
             return None
 
         logger.info("flooding.py: loaded %d SFHA polygons from NFHL", len(gdf))

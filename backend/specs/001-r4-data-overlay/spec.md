@@ -18,6 +18,13 @@
 - Q: What is the exposure data source and formula? → A: Single source — `backend/data/ejscreen_georgia.csv` (EJScreen v2.3, Georgia block groups, state FIPS 13). Use the `PTRAF` column (traffic proximity indicator) only; no heat raster. Formula: `exposure_norm = normalize(PTRAF)` joined to segments by spatial join on block group geometry.
 - Q: How should flooding be implemented? → A: Query flood zone polygons from the live FEMA NFHL REST API (`https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer`) and intersect with corridor segments. Acknowledge in code comments that NFHL misses urban flash flooding.
 
+### Session 2026-06-15 (revision)
+
+- Q: What geographic scope should all data modules use? → A: Clayton County only (FIPS 13063). The demo focuses on the Gillem Corridor (Forest Park / Lake City area). Fulton and DeKalb county data is not needed. All county filters updated to `{"Clayton"}`.
+- Q: What should `exposure_norm` measure? → A: Actual heat exposure — mean summer (June–August) daily maximum temperature from the OpenMeteo Historical Weather API (ERA5 reanalysis, free, no key required). Normalized with fixed Atlanta bounds: 28°C = 0.0, 40°C = 1.0. The previous EP_NOVEH vehicle-access proxy is replaced entirely.
+- Q: Where should the `layers/` package live? → A: Repo root (`layers/`), not `backend/layers/`. The data pipeline is separate from the FastAPI app. All module imports updated; `run_overlay.py` inserts repo root into `sys.path`.
+- Q: Should `run_overlay.py` include the flooding module? → A: Yes. `flooding.score()` is included in the integration script alongside all other modules. Returns a boolean Series (`flooding` column).
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 — Pre-Scored Safety Overlay Delivered to Scoring Engine (Priority: P1)
@@ -38,7 +45,7 @@ flag. Load the output into the scoring engine and confirm a route score is retur
 
 **Acceptance Scenarios**:
 
-1. **Given** a segment on a pedestrian-involved crash location in Fulton or DeKalb County,
+1. **Given** a segment on a pedestrian-involved crash location in Clayton County,
    **When** the crash overlay runs, **Then** that segment's `crash_norm` is higher than a
    segment on a local residential street with no pedestrian crash history.
 2. **Given** a segment where an ATL311 "broken sidewalk" report exists within 20 meters,
@@ -134,8 +141,8 @@ new reports added during the session appear without reload.
 - What if Supabase is unavailable or not yet configured? → hazards module uses only ATL311
   local data; gap_reports contribution is stubbed as an empty GeoDataFrame. Module
   completes successfully without Supabase connectivity.
-- What if the EJScreen block group geometry does not cover a segment? → `exposure_norm` = 0.0
-  (documented; treat as unknown, not zero exposure — note in code comment).
+- What if the OpenMeteo API is unreachable during prebake? → `exposure_norm` = 0.65 for all
+  segments (documented fallback; Atlanta summer heat is real regardless of API availability).
 - What happens when the ATL311 file contains report types not in the known hazard weight
   table? → assign weight 0.5 (the "other" default); do not fail.
 
@@ -145,9 +152,9 @@ new reports added during the session appear without reload.
 
 - **FR-001**: The overlay pipeline MUST produce a `crash_norm` value (0–1) for every
   walking segment in the corridor, derived from pedestrian crash history. Only crashes
-  where `F__of_Pedestrians_per_crash > 0` in Fulton or DeKalb County are used.
-  Crashes MUST be weighted by KABCO Severity: fatal and serious injury crashes weighted
-  higher than minor-injury and property-damage-only crashes.
+  where `F__of_Pedestrians_per_crash > 0` in Clayton County (Gillem Corridor demo scope)
+  are used. Crashes MUST be weighted by KABCO Severity: fatal and serious injury crashes
+  weighted higher than minor-injury and property-damage-only crashes.
 - **FR-002**: The overlay pipeline MUST produce a `hazard_norm` value (0–1) for every
   walking segment, based on infrastructure hazard reports within 20 meters. Sources:
   (1) local file `backend/data/ATL311_Service_Requests.geojson` filtered to physical
@@ -165,9 +172,11 @@ new reports added during the session appear without reload.
   height >= 3 m, derived from the Meta/WRI 1 m canopy height COG raster (accessed via
   `rioxarray`, clipped to Atlanta bbox at runtime — no full raster download).
 - **FR-006**: The overlay pipeline MUST produce an `exposure_norm` value (0–1) for every
-  segment using the EJScreen v2.3 `PTRAF` (traffic proximity) column from
-  `backend/data/ejscreen_georgia.csv`. Method: normalize `PTRAF` values across Georgia
-  block groups, then spatially join block group values to segments.
+  segment representing summer heat exposure. Method: fetch mean June–August daily maximum
+  temperature for the Gillem Corridor centroid (Clayton County, GA) from the OpenMeteo
+  Historical Weather API (ERA5 reanalysis, free, no API key required). Normalize using
+  fixed Atlanta-area bounds: 28°C → 0.0, 40°C → 1.0. If the API is unreachable, return
+  0.65 (documented fallback; Atlanta summers are hot, 0.0 would understate real risk).
 - **FR-007**: The overlay pipeline MUST produce a `slope_risk` value (0–1) for every
   segment, normalized so that flat segments score 0 and grades at or above the
   accessibility-impairing threshold score 1.
@@ -244,12 +253,14 @@ new reports added during the session appear without reload.
 - The canopy module accesses the Meta/WRI COG raster at runtime via `rioxarray` —
   no full raster download is needed, but prebake requires internet access for the
   raster clip. The demo itself does not require live raster access.
-- `backend/data/ejscreen_georgia.csv` is present before prebake runs. No online download
-  needed for the exposure module.
-- `backend/data/ATL311_Service_Requests.geojson` is present before prebake runs.
+- `backend/data/ATL311_Service_Requests.geojson` is present before prebake runs. Note:
+  ATL311 covers Atlanta city proper only — it will return no results for Clayton County
+  (Gillem Corridor). Gap reports from Supabase are the primary hazard source for the corridor.
 - Crash data from `backend/data/Crashes_2020-2024.geojson` is already in the repo
   and covers 2020–2024. Only pedestrian crashes (`F__of_Pedestrians_per_crash > 0`)
-  in Fulton or DeKalb County are used.
+  in Clayton County are used for the Gillem Corridor demo.
+- The exposure module uses the OpenMeteo Historical Weather API (free, no key). Prebake
+  requires internet access. The offline fallback is 0.65 (documented).
 - Supabase gap_reports is stubbed as an empty GeoDataFrame in hazards.py until the
   Supabase integration is wired up. This stub allows the module to run fully offline.
 - The `gap_reports` table owns read access for both the frontend and the scoring backend.

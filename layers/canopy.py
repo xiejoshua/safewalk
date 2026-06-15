@@ -20,17 +20,11 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Atlanta clip bbox: (min_lon, min_lat, max_lon, max_lat) in WGS84
-_ATLANTA_BBOX = (-84.6, 33.6, -84.2, 33.9)
+# Clayton County clip bbox: (min_lon, min_lat, max_lon, max_lat) in WGS84
+_CLAYTON_BBOX = (-84.5, 33.5, -84.2, 33.8)
 _BUFFER_M = 5.0
 _HEIGHT_THRESHOLD_M = 3.0
 
-# Public COG path — update if the dataset moves
-_COG_URL = (
-    "https://opendata.arcgis.com/datasets/"
-    # Fallback: will try S3 path below if this 404s
-)
-_COG_S3 = "s3://dataforgood-fb-forests/tree_height_geo_20201119_v0/tfcanopy_20201119_geo.tif"
 _COG_HTTP = (
     "https://dataforgood-fb-data.s3.amazonaws.com/forests/tree_height_geo_20201119_v0/"
     "tfcanopy_20201119_geo.tif"
@@ -39,20 +33,6 @@ _COG_HTTP = (
 
 def _open_canopy_raster():
     """Open Meta/WRI COG via rioxarray; returns None on failure."""
-    try:
-        import rioxarray  # noqa: F401
-        import xarray as xr
-
-        ds = xr.open_dataset(
-            _COG_HTTP,
-            engine="rasterio",
-            mask_and_scale=True,
-        )
-        return ds
-    except Exception:
-        pass
-
-    # Second attempt: rioxarray direct
     try:
         import rioxarray as rxr
 
@@ -68,22 +48,12 @@ def score(segments: gpd.GeoDataFrame) -> pd.Series:
     raster = _open_canopy_raster()
 
     if raster is None:
-        # Null policy: raster unreachable → canopy_pct = 0.0 (unknown, not no-shade)
+        # Null policy: raster unreachable → 0.0 (unknown, not no-shade)
         logger.warning("canopy.py: offline fallback — all segments get canopy_pct = 0.0")
         return pd.Series(0.0, index=segments["segment_id"], dtype=float)
 
     try:
-        import rioxarray as rxr  # noqa: F401
-
-        # Clip to Atlanta bbox (reads only the relevant COG tiles)
-        if hasattr(raster, "rio"):
-            da = raster.rio.clip_box(*_ATLANTA_BBOX)
-        else:
-            # xarray Dataset — pick first data variable
-            da = list(raster.data_vars.values())[0]
-            da = da.rio.clip_box(*_ATLANTA_BBOX)
-
-        # Convert to numpy for zonal computation
+        da = raster.rio.clip_box(*_CLAYTON_BBOX)
         data = da.squeeze().values  # (H, W)
         transform = da.rio.transform()
 
@@ -91,9 +61,7 @@ def score(segments: gpd.GeoDataFrame) -> pd.Series:
         segs_m["_buf"] = segs_m.geometry.buffer(_BUFFER_M)
 
         from rasterio.features import geometry_mask
-        from rasterio.transform import from_bounds
 
-        # Re-project buffer geometries to raster CRS (WGS84 for the COG)
         bufs_wgs = segs_m.set_geometry("_buf").to_crs(4326)
 
         results: list[float] = []

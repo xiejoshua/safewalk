@@ -20,10 +20,11 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 
-# Add backend/ to path so layer imports work when called directly
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# layers/ is at repo root — insert repo root into sys.path
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_REPO_ROOT))
 
-from layers import crash, canopy, exposure, hazards, slope
+from layers import canopy, crash, exposure, flooding, hazards, slope
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("run_overlay")
@@ -35,28 +36,34 @@ def run(segments: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Apply all R4 factor modules and return enriched GeoDataFrame."""
     out = segments.copy()
 
-    modules: list[tuple[str, object]] = [
-        ("crash_norm", crash),
-        ("hazard_norm", hazards),
-        ("canopy_pct", canopy),
+    # Scalar-returning modules: each produces a pd.Series indexed by segment_id
+    scalar_modules: list[tuple[str, object]] = [
+        ("crash_norm",    crash),
+        ("hazard_norm",   hazards),
+        ("canopy_pct",    canopy),
         ("exposure_norm", exposure),
+        ("flooding",      flooding),
     ]
 
-    for col, mod in modules:
+    for col, mod in scalar_modules:
         t0 = time.perf_counter()
         result: pd.Series = mod.score(segments)
         elapsed = time.perf_counter() - t0
-        # Align by segment_id in case ordering differs
         out[col] = result.reindex(out["segment_id"]).values
-        logger.info("%-16s → min=%.3f  max=%.3f  mean=%.3f  (%.2fs)", col, result.min(), result.max(), result.mean(), elapsed)
+        if result.dtype == bool:
+            logger.info("%-16s → True=%d / %d  (%.2fs)", col, int(result.sum()), len(result), elapsed)
+        else:
+            logger.info("%-16s → min=%.3f  max=%.3f  mean=%.3f  (%.2fs)",
+                        col, result.min(), result.max(), result.mean(), elapsed)
 
-    # Slope returns a tuple
+    # Slope returns (slope_risk, barrier) tuple
     t0 = time.perf_counter()
     slope_risk, barrier = slope.score(segments)
     elapsed = time.perf_counter() - t0
     out["slope_risk"] = slope_risk.reindex(out["segment_id"]).values
     out["barrier"] = barrier.reindex(out["segment_id"]).values
-    logger.info("%-16s → min=%.3f  max=%.3f  mean=%.3f  (%.2fs)", "slope_risk", slope_risk.min(), slope_risk.max(), slope_risk.mean(), elapsed)
+    logger.info("%-16s → min=%.3f  max=%.3f  mean=%.3f  (%.2fs)",
+                "slope_risk", slope_risk.min(), slope_risk.max(), slope_risk.mean(), elapsed)
     logger.info("%-16s → barrier_count=%d", "barrier", int(barrier.sum()))
 
     return out
@@ -83,12 +90,13 @@ def main() -> None:
 
     enriched = run(segments)
 
-    r4_cols = ["crash_norm", "hazard_norm", "canopy_pct", "exposure_norm", "slope_risk", "barrier"]
+    r4_cols = ["crash_norm", "hazard_norm", "canopy_pct", "exposure_norm",
+               "flooding", "slope_risk", "barrier"]
     logger.info("\nR4 column summary:")
     for col in r4_cols:
         if col in enriched.columns:
             series = enriched[col]
-            if series.dtype == bool:
+            if series.dtype == bool or series.dtype == object:
                 logger.info("  %-16s  True=%d / %d", col, int(series.sum()), len(series))
             else:
                 logger.info("  %-16s  min=%.3f  max=%.3f  mean=%.3f  null=%d",

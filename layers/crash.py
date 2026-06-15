@@ -2,7 +2,7 @@
 
 Data source: backend/data/Crashes_2020-2024.geojson (statewide GDOT crash data)
 Filter: pedestrian crashes only (F__of_Pedestrians_per_crash > 0)
-        in Fulton or DeKalb County
+        in Clayton County only (Gillem Corridor demo scope)
 Weight: KABCO severity (fatal > serious > minor > PDO)
 Method: 30 m buffer per segment, weighted crash count, min-max normalize
 
@@ -18,9 +18,9 @@ import pandas as pd
 
 from layers._utils import normalize, weight_by_kabco
 
-_DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "Crashes_2020-2024.geojson"
+_DATA_FILE = Path(__file__).resolve().parent.parent / "backend" / "data" / "Crashes_2020-2024.geojson"
 _BUFFER_M = 30.0
-_TARGET_COUNTIES = {"Fulton", "DeKalb"}
+_TARGET_COUNTIES = {"Clayton"}
 
 
 def _load_crashes() -> gpd.GeoDataFrame:
@@ -30,11 +30,10 @@ def _load_crashes() -> gpd.GeoDataFrame:
     ped_mask = crashes["F__of_Pedestrians_per_crash"].fillna(0) > 0
     crashes = crashes[ped_mask].copy()
 
-    # Filter to Fulton and DeKalb counties
+    # Filter to Clayton County (Gillem Corridor demo)
     county_mask = crashes["Area__County"].isin(_TARGET_COUNTIES)
     crashes = crashes[county_mask].copy()
 
-    # Compute severity weight for each crash
     crashes["sev_weight"] = crashes["KABCO_Severity"].apply(weight_by_kabco)
 
     return crashes.to_crs(32616)
@@ -42,18 +41,16 @@ def _load_crashes() -> gpd.GeoDataFrame:
 
 def score(segments: gpd.GeoDataFrame) -> pd.Series:
     """Return crash_norm in [0, 1] indexed by segment_id."""
-    if _DATA_FILE not in _load_crashes.__dict__:
-        pass  # cache handled below
-
     crashes_m = _load_crashes()
     segs_m = segments.to_crs(32616).copy()
-    segs_m["_buf"] = segs_m.geometry.buffer(_BUFFER_M)
 
-    weighted_counts: list[float] = []
-    seg_ids: list[str] = []
-
-    buf_gdf = segs_m.set_geometry("_buf")
-    joined = gpd.sjoin(buf_gdf[["segment_id", "_buf"]], crashes_m[["geometry", "sev_weight"]], how="left", predicate="contains")
+    buf_gdf = segs_m.set_geometry(segs_m.geometry.buffer(_BUFFER_M))
+    joined = gpd.sjoin(
+        buf_gdf[["segment_id", "geometry"]],
+        crashes_m[["geometry", "sev_weight"]],
+        how="left",
+        predicate="contains",
+    )
 
     agg = joined.groupby("segment_id")["sev_weight"].sum().fillna(0.0)
     result = agg.reindex(segments["segment_id"], fill_value=0.0)
