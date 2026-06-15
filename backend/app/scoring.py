@@ -69,9 +69,6 @@ def _accessible_barrier(seg: dict[str, Any]) -> bool:
         return True
     if seg.get("wheelchair") == "no":
         return True
-    slope = seg.get("slope_risk")
-    if slope is not None and slope > 1.0:
-        return True
     return False
 
 
@@ -99,18 +96,9 @@ def segment_risk(
 
 
 def crossing_penalty(seg: dict[str, Any], profile: str) -> float:
-    """Fixed per-node crossing penalty scaled by width/lanes and signalization."""
-    if not seg.get("is_crossing"):
-        return 0.0
-
-    base = 0.15
-    lanes = float(seg.get("lanes") or 2)
-    width_factor = min(lanes / 4.0, 1.5)
-    signalized = seg.get("traffic_signals") or seg.get("crossing") == "traffic_signals"
-    unsignalized_boost = 1.0 if not signalized else 0.4
-
-    penalty = base * width_factor * unsignalized_boost
-    if profile == "accessible":
+    """Use R3 precomputed crossing_penalty; ×2.5 multiplier for accessible profile."""
+    penalty = float(seg.get("crossing_penalty") or 0.0)
+    if profile == "accessible" and penalty > 0:
         penalty *= 2.5
     return penalty
 

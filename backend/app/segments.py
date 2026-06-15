@@ -22,10 +22,7 @@ SEGMENT_COLUMNS = [
     "exposure_norm",
     "slope_risk",
     "barrier",
-    "is_crossing",
-    "lanes",
-    "traffic_signals",
-    "crossing",
+    "crossing_penalty",
     "highway",
     "wheelchair",
 ]
@@ -46,6 +43,8 @@ class SegmentStore:
         if not path.exists():
             raise FileNotFoundError(f"Scored segments not found: {path}")
         gdf = gpd.read_parquet(path)
+        if "segment_id" in gdf.columns:
+            gdf = gdf.set_index("segment_id", drop=False)
         logger.info("Loaded %d scored segments from %s", len(gdf), path)
         return cls(gdf)
 
@@ -66,7 +65,7 @@ class SegmentStore:
         route_line_utm = route_utm.geometry.iloc[0]
 
         segments_utm = self.gdf.to_crs(32616)
-        matched_ids: set = set()
+        matched_ids: set[str] = set()
         matched: list[dict] = []
 
         # Sample points along the route to find nearby segments
@@ -77,20 +76,22 @@ class SegmentStore:
             pt_wgs = gpd.GeoSeries([pt_utm], crs=32616).to_crs(4326).iloc[0]
 
             candidates = list(self._sindex.intersection(pt_wgs.bounds))
-            best_id = None
+            best_pos: int | None = None
             best_dist = snap_tolerance_m
 
-            for idx in candidates:
-                seg_geom = self.gdf.geometry.iloc[idx]
-                seg_utm = segments_utm.geometry.iloc[idx]
+            for pos in candidates:
+                seg_utm = segments_utm.geometry.iloc[pos]
                 dist = pt_utm.distance(seg_utm)
                 if dist < best_dist:
                     best_dist = dist
-                    best_id = idx
+                    best_pos = pos
 
-            if best_id is not None and best_id not in matched_ids:
-                matched_ids.add(best_id)
-                row = self.gdf.iloc[best_id]
+            if best_pos is not None:
+                seg_id = str(self.gdf.index[best_pos])
+                if seg_id in matched_ids:
+                    continue
+                matched_ids.add(seg_id)
+                row = self.gdf.loc[seg_id]
                 seg_dict = {col: row.get(col) for col in SEGMENT_COLUMNS if col in row.index}
                 seg_dict["geometry"] = row.geometry
                 cp = crossing_penalty(seg_dict, profile)
@@ -115,8 +116,9 @@ def create_empty_store() -> SegmentStore:
             "exposure_norm": pd.Series(dtype=float),
             "slope_risk": pd.Series(dtype=float),
             "barrier": pd.Series(dtype=bool),
-            "is_crossing": pd.Series(dtype=bool),
-            "lanes": pd.Series(dtype=float),
+            "crossing_penalty": pd.Series(dtype=float),
+            "highway": pd.Series(dtype=str),
+            "wheelchair": pd.Series(dtype=str),
         },
         geometry=gpd.GeoSeries([], crs=4326),
         crs=4326,
