@@ -25,7 +25,8 @@ import geopandas as gpd
 import pandas as pd
 from shapely.ops import unary_union
 
-REPO = Path(__file__).resolve().parent.parent
+# Three .parent hops: layers/sidewalk.py → layers/ → backend/ → repo root.
+REPO = Path(__file__).resolve().parent.parent.parent
 ARC_PATH = REPO / "data" / "arc" / "clayton_sidewalks.geojson"
 
 WGS84 = "EPSG:4326"

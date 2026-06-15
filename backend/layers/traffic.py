@@ -29,7 +29,8 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 
-REPO = Path(__file__).resolve().parent.parent
+# Three .parent hops: layers/traffic.py → layers/ → backend/ → repo root.
+REPO = Path(__file__).resolve().parent.parent.parent
 AADT_PATH = REPO / "data" / "gdot" / "aadt_2017.geojson"
 AADT_FIELD = "AADT_2017"
 

@@ -40,7 +40,8 @@ from shapely.geometry import Point
 from layers.traffic import _parse_lanes_count, _str
 from network.overpass import load_cached_osm, parse_node_tags
 
-REPO = Path(__file__).resolve().parent.parent
+# Three .parent hops: layers/crossing.py → layers/ → backend/ → repo root.
+REPO = Path(__file__).resolve().parent.parent.parent
 
 WGS84 = "EPSG:4326"
 UTM16N = "EPSG:32616"

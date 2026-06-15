@@ -9,7 +9,7 @@
   "corridor_name": "gillem-logistics-corridor",
   "osm_cache_sha256": "e3797621b904b7c4c07dab34c3c3fd54696b2fc94b217a3bca5c48aa77385aee",
   "crs": "EPSG:4326",
-  "generated_at": "2026-06-15T16:28:01.258698+00:00",
+  "generated_at": "2026-06-15T22:42:52.397642+00:00",
   "head_segment_ids": [
     "1034466215-0000",
     "1034466215-0001",

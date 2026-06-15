@@ -19,7 +19,10 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+# Two paths: REPO root for `network`, REPO/backend for `layers` (relocated to
+# backend/layers/ to align with R4's module location).
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "backend"))
 
 import geopandas as gpd  # noqa: E402
 import pandas as pd  # noqa: E402
