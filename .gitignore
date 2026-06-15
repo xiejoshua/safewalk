@@ -1,1 +1,11 @@
 TASKS.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.env
+
+# Data artifacts
+backend/data/*.parquet
+!backend/data/.gitkeep
