@@ -1,8 +1,18 @@
+# Working docs (per-author scratch, not part of the deliverable)
 TASKS.md
 PROGRESS.md
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 .venv/
 venv/
+.env
+
+# OS / tooling
 .DS_Store
 .claude/
+
+# Data artifacts
+backend/data/*.parquet
+!backend/data/.gitkeep
