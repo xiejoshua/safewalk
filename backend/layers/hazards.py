@@ -78,31 +78,71 @@ def _load_atl311() -> gpd.GeoDataFrame:
 
 
 def _load_gap_reports() -> gpd.GeoDataFrame:
-    """Load gap_reports from Supabase.
+    """Load gap_reports from Supabase and return as GeoDataFrame (EPSG:32616).
 
-    TODO (T020): replace stub with live Supabase read:
-        from supabase import create_client
-        sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_ANON_KEY"])
-        rows = sb.table("gap_reports").select("id,geom,type").execute().data
-        ...
+    Falls back to an empty GeoDataFrame when SUPABASE_URL / SUPABASE_KEY are
+    not set so the module stays fully offline-safe.
     """
     supabase_url = os.environ.get("SUPABASE_URL")
-    supabase_key = os.environ.get("SUPABASE_ANON_KEY")
+    supabase_key = os.environ.get("SUPABASE_KEY")
 
     if not supabase_url or not supabase_key:
-        # Null policy: Supabase not configured → return empty (offline-safe)
-        logger.debug("SUPABASE_URL/ANON_KEY not set; using empty gap_reports stub")
+        # Null policy: Supabase not configured → empty (offline-safe)
+        logger.debug("SUPABASE_URL/SUPABASE_KEY not set; skipping gap_reports")
         return gpd.GeoDataFrame(
             {"geometry": gpd.GeoSeries([], crs=32616), "hazard_type": [], "weight": []},
             crs=32616,
         )
 
-    # TODO (T020): implement live read
-    logger.warning("Supabase env vars set but live read not yet implemented; using stub")
-    return gpd.GeoDataFrame(
-        {"geometry": gpd.GeoSeries([], crs=32616), "hazard_type": [], "weight": []},
-        crs=32616,
-    )
+    try:
+        from supabase import create_client
+        from shapely import wkb as shapely_wkb
+
+        sb = create_client(supabase_url, supabase_key)
+        rows = sb.table("gap_reports").select("id,geom,type").execute().data
+
+        if not rows:
+            return gpd.GeoDataFrame(
+                {"geometry": gpd.GeoSeries([], crs=32616), "hazard_type": [], "weight": []},
+                crs=32616,
+            )
+
+        geoms = []
+        hazard_types = []
+        for row in rows:
+            raw_geom = row.get("geom")
+            if raw_geom is None:
+                continue
+            # PostgREST returns geography as WKB hex string
+            try:
+                geoms.append(shapely_wkb.loads(raw_geom, hex=True))
+            except Exception:
+                # Fallback: try WKT
+                try:
+                    from shapely import wkt as shapely_wkt
+                    geoms.append(shapely_wkt.loads(raw_geom))
+                except Exception:
+                    logger.debug("gap_reports: could not parse geom for row %s", row.get("id"))
+                    continue
+            hazard_types.append(row.get("type", "other"))
+
+        gdf = gpd.GeoDataFrame(
+            {
+                "hazard_type": hazard_types,
+                "weight": [HAZARD_W.get(t, HAZARD_W["other"]) for t in hazard_types],
+            },
+            geometry=geoms,
+            crs=4326,
+        )
+        logger.info("gap_reports: loaded %d live reports from Supabase", len(gdf))
+        return gdf.to_crs(32616)
+
+    except Exception as exc:
+        logger.warning("gap_reports: Supabase read failed (%s); using empty fallback", exc)
+        return gpd.GeoDataFrame(
+            {"geometry": gpd.GeoSeries([], crs=32616), "hazard_type": [], "weight": []},
+            crs=32616,
+        )
 
 
 def score(segments: gpd.GeoDataFrame) -> pd.Series:
