@@ -281,3 +281,24 @@ first). Reply on Slack or edit this file directly.
 
 If you have follow-up questions, leave them in a `## R2 notes` section
 at the bottom of this file.
+
+---
+
+## R2 notes (2026-06-15)
+
+Answers to the five questions above — implemented on `main`:
+
+1. **Hard #1 — numeric coercion:** **Y.** Expect `lanes`/`maxspeed`/`width` as
+   `float64 | NaN` in parquet. Stub generator updated to emit floats.
+2. **Hard #2 — node tags on segments:** **Y (option a).** R3 emits
+   `is_crossing` / `traffic_signals` / `crossing` as joined segment columns.
+   Backend no longer reads them for scoring (see #3); kept available if needed
+   for explanations later.
+3. **Hard #3 — `crossing_penalty` ownership:** **Y (option a).** Backend now
+   passthroughs `crossing_penalty` from parquet; `accessible` ×2.5 stays in
+   `scoring.py`.
+4. **Hard #4 — bbox:** **Y — Gillem.** Added `corridor.json` at repo root;
+   stub generator reads its bbox; `models.py` examples updated to Gillem coords.
+5. **Hard #5 — full network:** **N for now.** Gillem-bbox stub is enough for
+   contract/shape work. Will request full-corridor parquet when testing
+   `snap_route` against realistic MARTA-stop origins.

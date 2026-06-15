@@ -10,12 +10,12 @@ class ScoreRequest(BaseModel):
     origin: tuple[float, float] = Field(
         ...,
         description="Origin [lon, lat] — typically a MARTA stop",
-        examples=[[-84.40, 33.69]],
+        examples=[[-84.347, 33.610]],
     )
     dest: tuple[float, float] = Field(
         ...,
         description="Destination [lon, lat]",
-        examples=[[-84.35, 33.71]],
+        examples=[[-84.329, 33.620]],
     )
     weights: dict[str, float] | None = Field(
         default=None,

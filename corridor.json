@@ -1,0 +1,8 @@
+{
+  "name": "Gillem Logistics Center",
+  "bbox": [-84.37, 33.58, -84.29, 33.65],
+  "primary_destination": {
+    "name": "Gillem Logistics Center entrance",
+    "lonlat": [-84.329, 33.62]
+  }
+}

@@ -28,8 +28,8 @@ uvicorn app.main:app --reload --port 8000
 
 ```json
 {
-  "origin": [-84.40, 33.69],
-  "dest": [-84.35, 33.71],
+  "origin": [-84.347, 33.610],
+  "dest": [-84.329, 33.620],
   "profile": "night"
 }
 ```
