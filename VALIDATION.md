@@ -252,3 +252,78 @@ The score columns reflect the current `layers/sidewalk.py` and
 `layers/traffic.py`; if either module changes, the scores update and
 this section's numbers go stale (re-run + update).
 
+---
+
+# Spot-check effect of `layers/crossing.py` — 2026-06-15
+
+`layers/crossing.py` shipped after the re-run above. Same 10 picks; same
+eyeballs; what changes is that traffic risk now combines with the new
+`crossing_penalty` column to give a fuller per-segment safety reading.
+
+**Method note:** `crossing.py` snaps OSM `highway=crossing` and
+`highway=traffic_signals` nodes to segments via a 5 m buffer-intersect (not
+nearest-neighbor). The buffer-intersect handles intersection nodes that
+sit on multiple ways at once — a `traffic_signals` node at a 4-way junction
+is correctly flagged on every Forest Pkwy/Jonesboro/etc. segment meeting there.
+
+## Combined-risk changes (`traffic_risk + crossing_penalty`)
+
+| Pick | name | tr before | + cp | combined | eyeball | new diff | verdict |
+|---|---|---:|---:|---:|---:|---:|---|
+| sw#1 | (footway) | 0.000 | 0.000 | 0.000 | n/a | — | (sidewalk) |
+| sw#2 | Anvil Block (sw) | 0.530 | 0.000 | 0.530 | n/a | — | (sidewalk) |
+| sw#3 | warehouse svc | 0.075 | 0.000 | 0.075 | n/a | — | (sidewalk) |
+| sw#4 | Price Street | 0.205 | 0.000 | 0.205 | n/a | — | (sidewalk) |
+| sw#5 | (short residential) | 0.205 | 0.000 | 0.205 | n/a | — | (sidewalk) |
+| **tr#6** | **Anvil Block** | 0.670 | **+0.045** | **0.715** | 0.80 | **0.085** | ✓ improved |
+| tr#7 | Jonesboro Road | 0.795 | 0.000 | 0.795 | 0.60 | 0.195 | ✓ (no change) |
+| tr#8 | Forest Parkway | 0.557 | 0.000 | 0.557 | 0.90 | 0.343 | ✗ (OSM gap) |
+| tr#9 | 3rd Avenue | 0.205 | 0.000 | 0.205 | 0.20 | 0.005 | ✓ (no change) |
+| tr#10 | (footway) | 0.000 | 0.000 | 0.000 | n/a | — | (no traffic) |
+
+**Pass rate (traffic side, viewable): still 3 / 4** — same as the re-run.
+
+### What changed
+- **tr#6 (Anvil Block traffic) improved.** Segment `9113869-0000` has a tagged unmarked-with-signal crossing → +0.045. Combined 0.715 vs eyeball 0.80, diff 0.085 (was 0.13).
+- **tr#8 (Forest Pkwy) did NOT improve.** Combined still 0.557 vs eyeball 0.90. Investigation: a `highway=traffic_signals` node sits EXACTLY on the segment (distance ~0 m), but there is **no `highway=crossing` node** at that intersection in OSM. Per the spec (penalty applies only to tagged crossings), the algorithm correctly emits `crossing_penalty=0` for signal-only segments. **This is an OSM data gap, not an algorithm bug** — the original plan flagged it as a risk.
+- **No regressions** anywhere.
+
+## Finding: OSM crossing-node coverage
+
+At the Forest Pkwy ↔ Jonesboro Rd intersection (pick #8's spot), OSM has:
+- `highway=traffic_signals` node `67371367` (signal exists) ✓
+- No `highway=crossing` node ✗
+
+A pedestrian at this intersection WILL cross — there's a signal. Real ground truth says "dangerous crossing." Our algorithm says "no tagged crossing → no penalty." The gap is OSM's, but we own surfacing it.
+
+### Two ways to close pick #8's gap (held for future work)
+
+1. **Treat signal-only nodes as implicit crossings.** If a segment has `traffic_signals=yes` but `is_crossing=False`, apply the penalty assuming signalized + class-default lanes. Quick (3-line change); empirically rough. Pick #8 would go to ~0.62 (combined), still under 0.90 but much closer.
+2. **Add an intersection-complexity penalty** based on way-junction topology (count of ways meeting at a node). Principled but its own task.
+
+For now, option (1) is the right next calibration step *if* the spot-check verdict needs to rise further. Hold until we've shipped the other R3 modules and re-spot-checked.
+
+## What `crossing.py` did correctly
+
+Beyond pick #8, the module's coverage is sensible:
+- **41 segments** with `is_crossing=True` in the 10k-segment slice — recognizable arterial crossings.
+- **61 segments** with `traffic_signals=yes` — including intersection nodes shared by multiple ways (buffer-intersect handles ties).
+- **Top-5 penalty segments** are all arterials (Anvil Block secondary 5-lane unmarked → 0.1875; Jonesboro primary 5-lane uncontrolled → 0.1875; Macon Hwy primary 4-lane unmarked → 0.150; …).
+- **Signalization correctly reduces penalty** (signalized factor 0.4×): Macon Hwy 4-lane *signalized* → 0.060 vs the *unsignalized* Macon segment → 0.150.
+- **Pedestrian-only ways** (footway/path): zero penalty even when `is_crossing=True`, because lanes=0 → width factor=0.
+- **Runtime:** 0.04 s on 10k segments.
+
+## Reproducing
+
+```bash
+python3 -c "
+import sys; sys.path.insert(0, '.')
+from layers.crossing import score, enrich
+# load wide corpus (see scripts/spot_check.py for the recipe)
+# then call score(wide) or enrich(wide) and inspect
+"
+```
+
+The `crossing.py` module uses only data already in `data/osm/<corridor>.json`
+— no external fetch. Deterministic across re-runs.
+
