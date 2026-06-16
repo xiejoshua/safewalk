@@ -11,15 +11,28 @@ import geopandas as gpd
 import pandas as pd
 from shapely.geometry import LineString, Point, mapping
 
-from app.scoring import crossing_penalty, resolve_weights, segment_risk
+from app.scoring import crossing_penalty, segment_risk
 from app.segments import SEGMENT_COLUMNS, SegmentStore
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_HIGHWAYS = frozenset(
-    {"footway", "path", "residential", "living_street", "pedestrian", "service", "tertiary"}
-)
-FORBIDDEN_HIGHWAYS = frozenset({"motorway", "trunk", "primary", "motorway_link", "trunk_link", "primary_link"})
+# Walkable OSM `highway` classes. Includes arterials (primary/secondary) because
+# pedestrians DO walk on them — that's the Marcus / Gillem story per DESIGN.md §11.
+# Their elevated `traffic_risk` naturally penalizes them in the safe-route
+# Dijkstra; the fast-route Dijkstra still uses them when they're the shortest.
+# Earlier exclusion of `primary` fragmented the graph into many islands
+# (largest connected component was only ~10% of nodes), making most realistic
+# Gillem-area OD pairs unroutable.
+ALLOWED_HIGHWAYS = frozenset({
+    "footway", "path", "pedestrian", "steps",
+    "residential", "living_street", "service", "unclassified",
+    "tertiary", "tertiary_link",
+    "secondary", "secondary_link",
+    "primary", "primary_link",
+})
+
+# Pedestrians are legally barred from motorways/trunks. Hard exclude.
+FORBIDDEN_HIGHWAYS = frozenset({"motorway", "motorway_link", "trunk", "trunk_link"})
 SNAP_MAX_M = 300.0
 NODE_PRECISION_M = 0.5
 
@@ -152,12 +165,12 @@ class GraphRouter:
                 edge.safe_cost = 1.0
                 edge.fast_cost = float(seg.get("length_m") or 1.0)
 
-    def set_safe_costs(self, weights: dict[str, float], profile: str) -> None:
+    def set_safe_costs(self, weights: dict[str, float], step_free: bool = False) -> None:
         for node_edges in self.adjacency.values():
             for edge in node_edges:
                 seg = self.segment_lookup[edge.segment_id]
-                cp = crossing_penalty(seg, profile)
-                risk = segment_risk(seg, weights, profile, crossing_penalty=cp)
+                cp = crossing_penalty(seg, step_free)
+                risk = segment_risk(seg, weights, step_free, crossing_penalty_value=cp)
                 edge.safe_cost = risk if risk != float("inf") else 1e12
 
     def snap_to_node(self, lon: float, lat: float) -> tuple[float, float]:
@@ -229,7 +242,7 @@ class GraphRouter:
         dest_lon: float,
         dest_lat: float,
         weights: dict[str, float],
-        profile: str,
+        step_free: bool = False,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float, float, float, float]:
         start = self.snap_to_node(origin_lon, origin_lat)
         goal = self.snap_to_node(dest_lon, dest_lat)
@@ -238,19 +251,25 @@ class GraphRouter:
         fast_segments = [self.segment_lookup[sid] for sid in fast_ids]
         fast_distance = sum(float(s.get("length_m") or 0.0) for s in fast_segments)
 
-        self.set_safe_costs(weights, profile)
+        self.set_safe_costs(weights, step_free)
         safe_ids, total_risk = self.dijkstra(start, goal, "safe_cost")
         safe_segments: list[dict[str, Any]] = []
         risks: list[float] = []
         for sid in safe_ids:
             seg = self.segment_lookup[sid].copy()
-            cp = crossing_penalty(seg, profile)
-            risk = segment_risk(seg, weights, profile, crossing_penalty=cp)
+            cp = crossing_penalty(seg, step_free)
+            risk = segment_risk(seg, weights, step_free, crossing_penalty_value=cp)
             seg["risk"] = risk
             safe_segments.append(seg)
             risks.append(risk)
 
-        mean_risk = sum(risks) / len(risks) if risks else float("inf")
+        # Mean over finite-risk segments only — if step_free=True and the only
+        # available path includes an unavoidable barrier, those segments report
+        # inf risk. Excluding them keeps mean_risk informative about the rest
+        # of the route. Callers can still detect barrier presence by checking
+        # `any(s["risk"] == float("inf") for s in safe_segments)`.
+        finite_risks = [r for r in risks if r != float("inf")]
+        mean_risk = sum(finite_risks) / len(finite_risks) if finite_risks else float("inf")
         safe_distance = sum(float(s.get("length_m") or 0.0) for s in safe_segments)
 
         return safe_segments, fast_segments, mean_risk, safe_distance, fast_distance, total_risk

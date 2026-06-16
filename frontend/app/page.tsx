@@ -20,8 +20,19 @@ import type { RouteChoice, RouteStatus } from "./components/RealMap";
 import { scoreRoute, submitGapReport } from "./lib/backendApi";
 import { routeData, scoreData } from "./lib/data";
 
-type PreferenceKey = "sidewalk" | "traffic" | "accessibility" | "shade";
+type PreferenceKey = "sidewalks" | "safety" | "comfort";
 const DOTS = 5;
+
+// Each slider dot maps to 0/25/50/75/100 on the backend's 0–100 scale.
+const SLIDER_SCALE = 25;
+
+// Theme-driven defaults (in DOTS units). Match DESIGN.md §7c roughly:
+//   light/day  → sidewalks 30, safety 55, comfort 15  → discrete 1/2/1
+//   dark/night → sidewalks 20, safety 70, comfort 10  → discrete 1/3/0
+const SLIDER_DEFAULTS: Record<"light" | "dark", Record<PreferenceKey, number>> = {
+  light: { sidewalks: 1, safety: 2, comfort: 1 },
+  dark:  { sidewalks: 1, safety: 3, comfort: 0 },
+};
 
 const RealMap = dynamic(() => import("./components/RealMap"), { ssr: false });
 
@@ -114,6 +125,21 @@ export default function Home() {
   const [routeStatus, setRouteStatus] = useState<RouteStatus>("idle");
   const [selectedRoute, setSelectedRoute] = useState<RouteChoice>("safe");
   const [theme, setTheme] = useState<"light" | "dark">("light");
+
+  // 3 sliders + 1 toggle. State lifted here so requestRoute can read it.
+  const [preferences, setPreferences] = useState<Record<PreferenceKey, number>>(
+    SLIDER_DEFAULTS.light,
+  );
+  const [stepFree, setStepFree] = useState(false);
+  const [userTouched, setUserTouched] = useState(false);
+
+  // Theme change resets slider defaults UNTIL the user has moved a slider.
+  // Option α from DESIGN: light/dark theme is also the day/night profile.
+  useEffect(() => {
+    if (userTouched) return;
+    setPreferences(SLIDER_DEFAULTS[theme]);
+  }, [theme, userTouched]);
+
   const requestRoute = useCallback(async () => {
     if (!start.trim() || !destination.trim()) return;
     setRouteStatus("loading");
@@ -128,7 +154,11 @@ export default function Home() {
       await scoreRoute({
         origin,
         dest,
-        profile: "day"
+        sidewalks: preferences.sidewalks * SLIDER_SCALE,
+        safety:    preferences.safety    * SLIDER_SCALE,
+        comfort:   preferences.comfort   * SLIDER_SCALE,
+        step_free: stepFree,
+        theme,
       });
       setRouteStatus("done");
     } catch {
@@ -136,7 +166,7 @@ export default function Home() {
     }
 
     setRouteRequest((request) => request + 1);
-  }, [destination, destinationCoords, start, startCoords]);
+  }, [destination, destinationCoords, preferences, start, startCoords, stepFree, theme]);
 
   const co2 = useMemo(
     () => Math.round(routeData.safe_route.distance_mi * 1.1 * 10) / 10,
@@ -185,7 +215,18 @@ export default function Home() {
           </div>
 
           <div className="sidebar-card">
-            <PreferencePanel />
+            <PreferencePanel
+              preferences={preferences}
+              onPreferencesChange={(next) => {
+                setPreferences(next);
+                setUserTouched(true);
+              }}
+              stepFree={stepFree}
+              onStepFreeChange={(value) => {
+                setStepFree(value);
+                setUserTouched(true);
+              }}
+            />
           </div>
 
           <div className="sidebar-card route-card-shell">
@@ -231,19 +272,21 @@ export default function Home() {
   );
 }
 
-function PreferencePanel() {
-  const [preferences, setPreferences] = useState<Record<PreferenceKey, number>>({
-    sidewalk: 3,
-    traffic: 2,
-    accessibility: 2,
-    shade: 2
-  });
-
+function PreferencePanel({
+  preferences,
+  onPreferencesChange,
+  stepFree,
+  onStepFreeChange,
+}: {
+  preferences: Record<PreferenceKey, number>;
+  onPreferencesChange: (next: Record<PreferenceKey, number>) => void;
+  stepFree: boolean;
+  onStepFreeChange: (value: boolean) => void;
+}) {
   const controls: [PreferenceKey, string][] = [
-    ["sidewalk", "Sidewalk presence"],
-    ["traffic", "Traffic exposure"],
-    ["accessibility", "Accessibility"],
-    ["shade", "Shade"]
+    ["sidewalks", "Sidewalks"],
+    ["safety", "Safety"],
+    ["comfort", "Comfort"],
   ];
 
   return (
@@ -254,14 +297,28 @@ function PreferencePanel() {
             label={label}
             value={preferences[key]}
             onChange={(value) =>
-              setPreferences((current) => ({
-                ...current,
-                [key]: value
-              }))
+              onPreferencesChange({ ...preferences, [key]: value })
             }
           />
         </div>
       ))}
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          paddingTop: 6,
+          fontSize: 13,
+          color: "#666",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={stepFree}
+          onChange={(event) => onStepFreeChange(event.target.checked)}
+        />
+        Wheelchair-accessible only
+      </label>
     </section>
   );
 }

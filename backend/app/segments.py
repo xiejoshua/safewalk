@@ -97,7 +97,7 @@ class SegmentStore:
         self,
         route: LineString,
         weights: dict[str, float],
-        profile: str,
+        step_free: bool = False,
         snap_tolerance_m: float = 30.0,
     ) -> list[dict]:
         """
@@ -139,8 +139,10 @@ class SegmentStore:
                 row = self.gdf.loc[seg_id]
                 seg_dict = {col: row.get(col) for col in SEGMENT_COLUMNS if col in row.index}
                 seg_dict["geometry"] = row.geometry
-                cp = crossing_penalty(seg_dict, profile)
-                seg_dict["risk"] = segment_risk(seg_dict, weights, profile, crossing_penalty=cp)
+                cp = crossing_penalty(seg_dict, step_free)
+                seg_dict["risk"] = segment_risk(
+                    seg_dict, weights, step_free, crossing_penalty_value=cp,
+                )
                 matched.append(seg_dict)
 
         return matched
