@@ -60,6 +60,7 @@ import pandas as pd  # noqa: E402
 from network.build import (  # noqa: E402
     explode_tags,
     filter_walk_eligible,
+    node_segments,
     segmentize_edges,
     ways_to_gdf,
 )
@@ -114,6 +115,7 @@ def build_full_network(corridor_name: str) -> gpd.GeoDataFrame:
     log.info("walk-eligible ways: %d", len(gdf))
 
     seg = segmentize_edges(gdf, target_m=25.0, min_tail_m=3.0)
+    seg = node_segments(seg)  # split at junctions so the walk graph stays connected
     seg = explode_tags(seg)
     log.info("segmentized: %d segments / %.2f km", len(seg), seg.length_m.sum() / 1000)
     return seg

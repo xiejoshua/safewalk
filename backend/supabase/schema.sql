@@ -18,9 +18,20 @@ create table if not exists public.gap_reports (
                     'other'
                 )),
     note        text,
+    photo_url   text,
     reported_at timestamptz not null default now(),
     status      text not null default 'open' check (status in ('open', 'resolved'))
 );
+
+-- Plain coordinates so the frontend can render pins without parsing the geography
+-- column. Stored generated columns appear in realtime INSERT payloads too.
+-- (For an already-deployed table, see migrations/0001_gap_reports_live_crowdsourcing.sql.)
+alter table public.gap_reports
+    add column if not exists lng double precision
+    generated always as (st_x(geom::geometry)) stored;
+alter table public.gap_reports
+    add column if not exists lat double precision
+    generated always as (st_y(geom::geometry)) stored;
 
 -- ── Spatial index ─────────────────────────────────────────────────────────────
 

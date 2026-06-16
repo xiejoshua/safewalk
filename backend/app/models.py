@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 Theme = Literal["light", "dark"]
@@ -84,6 +84,42 @@ class FastRouteResult(BaseModel):
 class RouteResponse(BaseModel):
     safe_route: SafeRouteResult
     fast_route: FastRouteResult
+
+
+class GapReport(BaseModel):
+    # The live table's id may be an integer; coerce to string so the API is stable.
+    model_config = ConfigDict(coerce_numbers_to_str=True)
+
+    id: str
+    type: str
+    note: str | None = None
+    photo_url: str | None = None
+    lng: float | None = None
+    lat: float | None = None
+    status: str | None = None
+    reported_at: str | None = None
+
+
+class GapReportCreate(BaseModel):
+    type: str = "other"
+    note: str | None = None
+    lng: float = Field(..., ge=-180, le=180)
+    lat: float = Field(..., ge=-90, le=90)
+
+
+class VerifyGapResponse(BaseModel):
+    verified: bool
+    confidence: float | None = None
+    report: GapReport | None = None
+    reason: str | None = None
+    ai_type: str | None = None
+
+
+GapStatus = Literal["reported", "in_progress", "processed"]
+
+
+class GapStatusUpdate(BaseModel):
+    status: GapStatus
 
 
 class SegmentDetailResponse(BaseModel):

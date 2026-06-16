@@ -5,11 +5,22 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from app.directions import fetch_walking_routes, route_to_geojson
+from app.gap_reports import (
+    GapReportError,
+    create_gap_report,
+    list_gap_reports,
+    update_gap_report_status,
+    verify_and_record_gap,
+)
 from app.models import (
     FastRouteResult,
+    GapReport,
+    GapReportCreate,
+    GapStatusUpdate,
     HealthResponse,
     RouteResponse,
     RouteResult,
@@ -18,6 +29,7 @@ from app.models import (
     ScoreRequest,
     ScoreResponse,
     SegmentDetailResponse,
+    VerifyGapResponse,
 )
 from app.network import GraphRouter, serialize_segment
 from app.scoring import (
@@ -151,10 +163,88 @@ def get_route(
             explanation=explanation,
         ),
         fast_route=FastRouteResult(
-            segments=_to_route_segments(fast_segments, include_risk=False),
+            segments=_to_route_segments(fast_segments, include_risk=True),
             distance_m=round(fast_distance, 2),
         ),
     )
+
+
+@router.get("/gap-reports", response_model=list[GapReport])
+async def get_gap_reports() -> list[GapReport]:
+    """List all crowdsourced gap reports (the pins shown on the map)."""
+    try:
+        rows = await run_in_threadpool(list_gap_reports)
+    except GapReportError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — surface upstream failures as 502
+        logger.exception("gap-reports list failed")
+        raise HTTPException(status_code=502, detail=f"gap_reports read error: {exc}") from exc
+
+    return [GapReport(**row) for row in rows]
+
+
+@router.post("/gap-reports", response_model=GapReport)
+async def post_gap_report(report: GapReportCreate) -> GapReport:
+    """Create a crowdsourced gap report without a photo."""
+    try:
+        row = await run_in_threadpool(
+            create_gap_report,
+            report.lng,
+            report.lat,
+            report.note or "",
+            report.type,
+        )
+    except GapReportError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("gap-report create failed")
+        raise HTTPException(status_code=502, detail=f"gap_reports insert error: {exc}") from exc
+
+    return GapReport(**row)
+
+
+@router.patch("/gap-reports/{report_id}", response_model=GapReport)
+async def patch_gap_report(report_id: str, update: GapStatusUpdate) -> GapReport:
+    """Update a report's workflow status (reported -> in_progress -> processed)."""
+    try:
+        row = await run_in_threadpool(update_gap_report_status, report_id, update.status)
+    except GapReportError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("gap-report status update failed")
+        raise HTTPException(status_code=502, detail=f"gap_reports update error: {exc}") from exc
+
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Gap report not found: {report_id}")
+    return GapReport(**row)
+
+
+@router.post("/verify-gap", response_model=VerifyGapResponse)
+async def verify_gap(
+    photo: UploadFile = File(...),
+    lng: float = Form(..., ge=-180, le=180),
+    lat: float = Form(..., ge=-90, le=90),
+    note: str = Form(""),
+) -> VerifyGapResponse:
+    """Verify a crowdsourced gap photo with Claude vision; if real, store it as a pin.
+
+    Verified reports are inserted into Supabase gap_reports, which the frontend map
+    subscribes to over realtime — so a confirmed pin appears live on every client.
+    """
+    image_bytes = await photo.read()
+    media_type = photo.content_type or "image/jpeg"
+
+    try:
+        result = await run_in_threadpool(
+            verify_and_record_gap, image_bytes, media_type, lng, lat, note
+        )
+    except GapReportError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — surface upstream failures as 502
+        logger.exception("verify-gap failed")
+        raise HTTPException(status_code=502, detail=f"Gap verification error: {exc}") from exc
+
+    return VerifyGapResponse(**result)
 
 
 @router.get("/segment/{segment_id}", response_model=SegmentDetailResponse)

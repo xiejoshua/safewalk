@@ -15,6 +15,7 @@ from math import ceil
 
 import geopandas as gpd
 import pandas as pd
+from shapely import STRtree
 from shapely.geometry import LineString, Point
 from shapely.ops import substring
 
@@ -121,6 +122,87 @@ def segmentize_edges(
     result = result.set_index("segment_id", drop=False)
     result.index.name = "segment_id"
     return result
+
+
+def _intersection_points(inter) -> list[Point]:
+    """Extract candidate split points from a geometry intersection."""
+    if inter.is_empty:
+        return []
+    kind = inter.geom_type
+    if kind == "Point":
+        return [inter]
+    if kind == "MultiPoint":
+        return list(inter.geoms)
+    out: list[Point] = []
+    for part in getattr(inter, "geoms", [inter]):
+        if part.geom_type == "Point":
+            out.append(part)
+        elif part.geom_type == "LineString":  # collinear overlap → use its ends
+            coords = list(part.coords)
+            out += [Point(coords[0]), Point(coords[-1])]
+    return out
+
+
+def node_segments(
+    seg_gdf: gpd.GeoDataFrame,
+    *,
+    edge_guard_m: float = 0.3,
+    min_piece_m: float = 0.1,
+) -> gpd.GeoDataFrame:
+    """Split segments at intersections so junctions become shared endpoints.
+
+    Fixed-distance segmentization leaves junction points in the *interior* of a
+    segment, and the router only connects segments by coincident endpoints — so
+    without this step intersecting ways never connect and the graph shatters into
+    thousands of disconnected islands.
+
+    Each split piece inherits its parent row's attributes (no merging, so per-25 m
+    scoring granularity is preserved). ``segment_id`` of split pieces is suffixed
+    ``_{k}``; ``length_m`` is recomputed in EPSG:32616. Input/output are WGS84.
+    """
+    if seg_gdf.empty:
+        return seg_gdf.copy()
+
+    src_crs = seg_gdf.crs
+    attr_cols = [c for c in seg_gdf.columns if c != "geometry"]
+    proj = seg_gdf.to_crs(UTM16N).reset_index(drop=True)
+    geoms = list(proj.geometry.values)
+    tree = STRtree(geoms)
+
+    rows: list[dict] = []
+    new_geoms: list[LineString] = []
+    for i, geom in enumerate(geoms):
+        length = geom.length
+        base = {c: proj.iloc[i][c] for c in attr_cols}
+
+        dists: set[float] = set()
+        for j in tree.query(geom):
+            if j == i:
+                continue
+            for pt in _intersection_points(geom.intersection(geoms[j])):
+                d = geom.project(pt)
+                if edge_guard_m < d < length - edge_guard_m:
+                    dists.add(round(d, 2))
+
+        bounds = [0.0] + sorted(dists) + [length]
+        spans = [(bounds[k], bounds[k + 1]) for k in range(len(bounds) - 1)]
+        spans = [(a, b) for a, b in spans if b - a >= min_piece_m]
+
+        for k, (a, b) in enumerate(spans):
+            piece = substring(geom, a, b)
+            if piece.is_empty or piece.length <= 0:
+                continue
+            rec = dict(base)
+            if len(spans) > 1:
+                rec["segment_id"] = f"{base['segment_id']}_{k}"
+            rec["length_m"] = float(piece.length)
+            rows.append(rec)
+            new_geoms.append(piece)
+
+    out = gpd.GeoDataFrame(rows, geometry=new_geoms, crs=UTM16N).to_crs(src_crs)
+    out = out.set_index("segment_id", drop=False)
+    out.index.name = "segment_id"
+    return out[[c for c in seg_gdf.columns if c in out.columns]]
 
 
 def explode_tags(

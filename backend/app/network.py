@@ -248,7 +248,13 @@ class GraphRouter:
         goal = self.snap_to_node(dest_lon, dest_lat)
 
         fast_ids, fast_cost = self.dijkstra(start, goal, "fast_cost")
-        fast_segments = [self.segment_lookup[sid] for sid in fast_ids]
+        # Copy + attach risk so the fast (default) route can be colored by safety too.
+        fast_segments: list[dict[str, Any]] = []
+        for sid in fast_ids:
+            seg = self.segment_lookup[sid].copy()
+            cp = crossing_penalty(seg, step_free)
+            seg["risk"] = segment_risk(seg, weights, step_free, crossing_penalty_value=cp)
+            fast_segments.append(seg)
         fast_distance = sum(float(s.get("length_m") or 0.0) for s in fast_segments)
 
         self.set_safe_costs(weights, step_free)

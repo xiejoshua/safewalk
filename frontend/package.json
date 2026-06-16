@@ -6,6 +6,7 @@
   },
   "dependencies": {
     "@maplibre/maplibre-gl-directions": "^0.9.1",
+    "@supabase/supabase-js": "^2.108.2",
     "framer-motion": "^12.40.0",
     "lucide-react": "^0.468.0",
     "maplibre-gl": "^5.24.0",
