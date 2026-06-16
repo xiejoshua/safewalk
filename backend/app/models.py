@@ -3,7 +3,6 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-ProfileName = Literal["day", "night", "accessible"]
 Theme = Literal["light", "dark"]
 
 
@@ -18,7 +17,6 @@ class ScoreRequest(BaseModel):
         description="Destination [lon, lat]",
         examples=[[-84.329, 33.620]],
     )
-    # ---- New slider-based shape (preferred) ----
     sidewalks: int | None = Field(
         default=None, ge=0, le=100,
         description="Sidewalk-presence weight (0–100). Theme default used if omitted.",
@@ -37,17 +35,7 @@ class ScoreRequest(BaseModel):
     )
     theme: Theme = Field(
         default="light",
-        description="Light = day defaults, dark = night defaults. Only used when sliders are omitted.",
-    )
-
-    # ---- Legacy shape (deprecated; kept for back-compat) ----
-    weights: dict[str, float] | None = Field(
-        default=None,
-        description="DEPRECATED: pre-normalized factor weights. Use sliders instead.",
-    )
-    profile: ProfileName | None = Field(
-        default=None,
-        description="DEPRECATED: 'day' | 'night' | 'accessible'. Use sliders + step_free + theme instead.",
+        description="Light = day defaults, dark = night defaults. Used as fallback for omitted sliders.",
     )
 
 

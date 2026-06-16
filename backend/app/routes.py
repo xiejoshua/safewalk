@@ -22,7 +22,6 @@ from app.models import (
 from app.network import GraphRouter, serialize_segment
 from app.scoring import (
     build_explanation,
-    resolve_weights,
     resolve_weights_from_sliders,
     score_route,
 )
@@ -34,69 +33,6 @@ router = APIRouter()
 
 
 # =========================================================================
-# Request → (weights, step_free) translation
-# =========================================================================
-
-def _resolve_request_weights(req: ScoreRequest) -> tuple[dict[str, float], bool]:
-    """Translate a ScoreRequest into (weights, step_free). Priority order:
-      1. Explicit legacy `weights` dict → resolve_weights
-      2. Explicit legacy `profile` string → resolve_weights;
-         `profile="accessible"` becomes step_free=True (alias).
-      3. Default → new slider path (theme + sliders, sliders may be None
-         in which case theme defaults fill in).
-    """
-    if req.weights is not None:
-        return resolve_weights(req.weights, None), False
-
-    if req.profile is not None:
-        return resolve_weights(None, req.profile), (req.profile == "accessible")
-
-    weights = resolve_weights_from_sliders(
-        sidewalks=req.sidewalks,
-        safety=req.safety,
-        comfort=req.comfort,
-        theme=req.theme,
-    )
-    return weights, req.step_free
-
-
-def _resolve_query_weights(
-    sidewalks: int | None,
-    safety: int | None,
-    comfort: int | None,
-    step_free: bool,
-    theme: Literal["light", "dark"],
-    profile: str | None,
-    sidewalk_weight: float | None,
-    traffic_weight: float | None,
-) -> tuple[dict[str, float], bool]:
-    """Same priority as _resolve_request_weights but for GET query params.
-
-    Legacy `profile` or per-factor query params override the slider path
-    when explicitly provided. Otherwise the slider path runs with theme +
-    any provided slider values (None → theme defaults).
-    """
-    # Legacy explicit per-factor weights
-    if sidewalk_weight is not None or traffic_weight is not None:
-        from app.scoring import PROFILES
-        base = dict(PROFILES.get(profile or "day", PROFILES["day"]))
-        if sidewalk_weight is not None:
-            base["sidewalk"] = float(sidewalk_weight)
-        if traffic_weight is not None:
-            base["traffic"] = float(traffic_weight)
-        return resolve_weights(base, None), (profile == "accessible")
-
-    # Legacy explicit profile
-    if profile is not None:
-        return resolve_weights(None, profile), (profile == "accessible")
-
-    # Default: slider path
-    return resolve_weights_from_sliders(
-        sidewalks=sidewalks, safety=safety, comfort=comfort, theme=theme,
-    ), step_free
-
-
-# =========================================================================
 # POST /score — Mapbox candidate scoring
 # =========================================================================
 
@@ -105,7 +41,13 @@ def score_routes(request: ScoreRequest, http_request: Request) -> ScoreResponse:
     settings = http_request.app.state.settings
     segment_store = http_request.app.state.segment_store
 
-    weights, step_free = _resolve_request_weights(request)
+    weights = resolve_weights_from_sliders(
+        sidewalks=request.sidewalks,
+        safety=request.safety,
+        comfort=request.comfort,
+        theme=request.theme,
+    )
+    step_free = request.step_free
 
     try:
         candidates = fetch_walking_routes(
@@ -173,24 +115,18 @@ def get_route(
     origin_lng: float = Query(..., ge=-180, le=180),
     dest_lat: float = Query(..., ge=-90, le=90),
     dest_lng: float = Query(..., ge=-180, le=180),
-    # Preferred: 3 sliders + step-free toggle + theme
     sidewalks: int | None = Query(default=None, ge=0, le=100),
     safety:    int | None = Query(default=None, ge=0, le=100),
     comfort:   int | None = Query(default=None, ge=0, le=100),
     step_free: bool = Query(default=False),
     theme: Literal["light", "dark"] = Query(default="light"),
-    # Legacy back-compat (deprecated; ignored when sliders or step_free are set)
-    profile: str | None = Query(default=None, pattern="^(day|night|accessible)$"),
-    sidewalk_weight: float | None = Query(default=None, ge=0, le=1),
-    traffic_weight:  float | None = Query(default=None, ge=0, le=1),
 ) -> RouteResponse:
     graph: GraphRouter = http_request.app.state.graph_router
     if graph.walkable_gdf.empty:
         raise HTTPException(status_code=503, detail="Walkable network is not loaded")
 
-    weights, resolved_step_free = _resolve_query_weights(
-        sidewalks, safety, comfort, step_free, theme,
-        profile, sidewalk_weight, traffic_weight,
+    weights = resolve_weights_from_sliders(
+        sidewalks=sidewalks, safety=safety, comfort=comfort, theme=theme,
     )
 
     try:
@@ -200,12 +136,12 @@ def get_route(
             dest_lon=dest_lng,
             dest_lat=dest_lat,
             weights=weights,
-            step_free=resolved_step_free,
+            step_free=step_free,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    explanation = build_explanation(safe_segments, weights, step_free=resolved_step_free)
+    explanation = build_explanation(safe_segments, weights, step_free=step_free)
 
     return RouteResponse(
         safe_route=SafeRouteResult(

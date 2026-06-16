@@ -6,7 +6,7 @@ from typing import Any
 
 from shapely.geometry import mapping
 
-from app.scoring import DEFAULTS, crossing_penalty, segment_risk
+from app.scoring import crossing_penalty, resolve_weights_from_sliders, segment_risk
 from app.segments import SegmentStore
 
 FACTOR_FIELDS = (
@@ -46,8 +46,11 @@ class SegmentRepository:
         return self._build_response(seg, geom)
 
     def _build_response(self, seg: dict[str, Any], geometry: dict | None) -> dict[str, Any]:
-        cp = crossing_penalty(seg, "day")
-        composite = segment_risk(seg, DEFAULTS, "day", crossing_penalty=cp)
+        # Composite score uses the light/day theme defaults — representative
+        # for /segment/{id} endpoint where no user preferences are available.
+        cp = crossing_penalty(seg, step_free=False)
+        weights = resolve_weights_from_sliders(theme="light")
+        composite = segment_risk(seg, weights, step_free=False, crossing_penalty_value=cp)
 
         return {
             "segment_id": seg["segment_id"],

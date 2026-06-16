@@ -11,7 +11,7 @@ import geopandas as gpd
 import pandas as pd
 from shapely.geometry import LineString, Point, mapping
 
-from app.scoring import crossing_penalty, resolve_weights, segment_risk
+from app.scoring import crossing_penalty, segment_risk
 from app.segments import SEGMENT_COLUMNS, SegmentStore
 
 logger = logging.getLogger(__name__)

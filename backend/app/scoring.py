@@ -1,15 +1,14 @@
 """Safety scoring: 3 sliders + step-free toggle → weighted segment risk.
 
-Public API (used by routes.py and network.py):
+Public API (used by routes.py, network.py, segments.py, segment_repository.py):
   - resolve_weights_from_sliders(sidewalks, safety, comfort, theme)
-        → dict[str, float] of 7 normalized factor weights
-  - resolve_weights(weights, profile)               # legacy back-compat
-  - segment_risk(seg, weights, step_free, crossing_penalty)
+        → dict[str, float] of 8 normalized factor weights
+  - segment_risk(seg, weights, step_free, crossing_penalty_value)
   - crossing_penalty(seg, step_free)
   - score_route(segments, weights, step_free)
   - build_explanation(segments, weights, step_free)
 
-Design (locked 2026-06-16, see DESIGN.md §7c):
+Design (locked 2026-06-16, see SCORING.md):
   Frontend exposes 3 sliders (Sidewalks / Safety / Comfort) and 1 toggle
   (step-free / wheelchair-accessible). Each slider value is 0–100. Light vs
   dark theme picks defaults; user-adjusted sliders override. The toggle
@@ -27,40 +26,11 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-# 7 weighted factors. (flooding is the 8th; added during this rewrite.)
+# 8 weighted factors. Order matches FACTOR_COLUMNS below.
 FACTORS: tuple[str, ...] = (
     "sidewalk", "traffic", "crash", "hazards",
     "shade", "exposure", "slope", "flooding",
 )
-
-# Legacy DESIGN.md §7c day profile (sums to 1.00; flooding 0 = legacy).
-DEFAULTS: dict[str, float] = {
-    "sidewalk": 0.30,
-    "traffic":  0.20,
-    "crash":    0.20,
-    "hazards":  0.15,
-    "shade":    0.10,
-    "exposure": 0.05,
-    "slope":    0.00,
-    "flooding": 0.00,
-}
-
-PROFILES: dict[str, dict[str, float]] = {
-    "day":   DEFAULTS,
-    "night": {
-        "sidewalk": 0.20, "traffic": 0.25, "crash":    0.30,
-        "hazards":  0.15, "shade":   0.05, "exposure": 0.05,
-        "slope":    0.00, "flooding": 0.00,
-    },
-    # `accessible` is now a back-compat alias for "day defaults + step_free=True".
-    # The actual step-free hard-avoid happens via the step_free flag in
-    # segment_risk()/crossing_penalty(), not via the profile name.
-    "accessible": {
-        "sidewalk": 0.35, "traffic": 0.10, "crash":    0.10,
-        "hazards":  0.15, "shade":   0.05, "exposure": 0.05,
-        "slope":    0.20, "flooding": 0.00,
-    },
-}
 
 # Parquet column name for each weight key (used by build_explanation).
 FACTOR_COLUMNS: dict[str, str] = {
@@ -132,22 +102,6 @@ def resolve_weights_from_sliders(
         for factor, sub_w in SUBWEIGHTS[slider].items():
             out[factor] += slider_w * sub_w
     return out
-
-
-def resolve_weights(
-    weights: dict[str, float] | None,
-    profile: str | None,
-) -> dict[str, float]:
-    """Back-compat path: accept legacy `weights` dict or `profile` name.
-
-    Existing callers passing `{"sidewalk": 0.3, "traffic": 0.2, ...}` or
-    `profile="accessible"` still work. New callers should prefer
-    :func:`resolve_weights_from_sliders` instead.
-    """
-    raw = weights or PROFILES.get(profile or "day", DEFAULTS)
-    clamped = {f: max(0.0, float(raw.get(f, 0))) for f in FACTORS}
-    total = sum(clamped.values()) or 1.0
-    return {f: v / total for f, v in clamped.items()}
 
 
 # =========================================================================

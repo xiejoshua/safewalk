@@ -1,29 +1,16 @@
 import { routeData } from "./data";
 
 export type LngLat = [number, number];
-export type RouteProfile = "day" | "night" | "accessible";
 export type Theme = "light" | "dark";
 
 export type ScoreRequest = {
   origin: LngLat;
   dest: LngLat;
-  // ---- New slider-based shape (preferred) ----
   sidewalks?: number;          // 0–100; defaults via theme if omitted
   safety?: number;             // 0–100
   comfort?: number;            // 0–100
   step_free?: boolean;         // wheelchair-accessible toggle
   theme?: Theme;               // light=day defaults, dark=night defaults
-  // ---- Legacy shape (deprecated; kept for back-compat) ----
-  weights?: {
-    sidewalk?: number;
-    traffic?: number;
-    crash?: number;
-    hazards?: number;
-    shade?: number;
-    exposure?: number;
-    slope?: number;
-  };
-  profile?: RouteProfile;
 };
 
 export type ScoredRoute = {
