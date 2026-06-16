@@ -100,6 +100,13 @@ class GapReport(BaseModel):
     reported_at: str | None = None
 
 
+class GapReportCreate(BaseModel):
+    type: str = "other"
+    note: str | None = None
+    lng: float = Field(..., ge=-180, le=180)
+    lat: float = Field(..., ge=-90, le=90)
+
+
 class VerifyGapResponse(BaseModel):
     verified: bool
     confidence: float | None = None

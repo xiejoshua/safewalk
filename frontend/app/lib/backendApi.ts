@@ -30,6 +30,13 @@ export type VerifyGapRequest = {
   note?: string;
 };
 
+export type SubmitGapReportRequest = {
+  photo?: File | null;
+  coordinates: LngLat;
+  note?: string;
+  type?: string;
+};
+
 export type VerifiedGapReport = {
   id: string;
   type: string;
@@ -136,4 +143,48 @@ export async function verifyGapReport(request: VerifyGapRequest): Promise<Verify
   }
 
   return response.json() as Promise<VerifyGapResponse>;
+}
+
+export async function submitGapReport(request: SubmitGapReportRequest): Promise<VerifyGapResponse> {
+  if (request.photo) {
+    return verifyGapReport({
+      photo: request.photo,
+      coordinates: request.coordinates,
+      note: request.note
+    });
+  }
+
+  if (!API_BASE_URL) {
+    throw new Error(
+      "Backend not configured. Set NEXT_PUBLIC_SAFEWALK_API_URL to enable gap reporting."
+    );
+  }
+
+  const [lng, lat] = request.coordinates;
+  const response = await fetch(`${API_BASE_URL}/gap-reports`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: request.type ?? "other",
+      note: request.note ?? "",
+      lng,
+      lat
+    })
+  });
+
+  if (!response.ok) {
+    let detail = "Failed to submit gap report";
+    try {
+      const body = (await response.json()) as { detail?: string };
+      if (body.detail) detail = body.detail;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(detail);
+  }
+
+  return {
+    verified: true,
+    report: (await response.json()) as VerifiedGapReport
+  };
 }

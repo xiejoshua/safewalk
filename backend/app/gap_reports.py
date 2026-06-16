@@ -182,6 +182,14 @@ def _insert_report(
     return rows[0] if rows else {}
 
 
+def create_gap_report(
+    lng: float, lat: float, note: str = "", gap_type: str = "other"
+) -> dict:
+    """Create a crowdsourced report without photo verification."""
+    normalized_type = gap_type if gap_type in GAP_TYPES else "other"
+    return _insert_report(lng, lat, normalized_type, note.strip(), None)
+
+
 def list_gap_reports() -> list[dict]:
     """Return all gap reports for the map (newest first).
 

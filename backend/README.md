@@ -95,10 +95,15 @@ The canonical scored parquet is produced by `scripts/prebake.py` at the **repo r
 
 ## Docker
 
+Build from the **repo root** so the parquet under `outputs/` gets baked into
+the image. The build will fail loud if `outputs/scored_segments.parquet`
+doesn't exist — run `python scripts/prebake.py` first.
+
 ```bash
-docker build -t safewalk-api .
-docker run -p 8000:8000 -e MAPBOX_ACCESS_TOKEN=pk.xxx \
-  -v "$(pwd)/../outputs:/app/outputs" safewalk-api
+# from repo root
+python scripts/prebake.py                                  # produce outputs/scored_segments.parquet
+docker build -f backend/Dockerfile -t safewalk-api .
+docker run -p 8000:8000 -e MAPBOX_ACCESS_TOKEN=pk.xxx safewalk-api
 ```
 
 ## Environment

@@ -11,6 +11,7 @@ from starlette.concurrency import run_in_threadpool
 from app.directions import fetch_walking_routes, route_to_geojson
 from app.gap_reports import (
     GapReportError,
+    create_gap_report,
     list_gap_reports,
     update_gap_report_status,
     verify_and_record_gap,
@@ -18,6 +19,7 @@ from app.gap_reports import (
 from app.models import (
     FastRouteResult,
     GapReport,
+    GapReportCreate,
     GapStatusUpdate,
     HealthResponse,
     RouteResponse,
@@ -40,81 +42,6 @@ from app.segment_repository import SegmentRepository
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-SIDEWALK_SERVICE_URL = (
-    "https://services2.arcgis.com/zLeajbicrDRLQcny/ArcGIS/rest/services/"
-    "Sidewalks_Inventory/FeatureServer/2/query"
-)
-MARTA_AREA_ENVELOPE = "-84.52,33.61,-84.20,33.97"
-SIDEWALK_PAGE_SIZE = 2000
-
-
-def sidewalk_quality(sidewalk_cov: float | None) -> str:
-    if sidewalk_cov is None:
-        return "partial"
-    if sidewalk_cov >= 0.75:
-        return "full"
-    if sidewalk_cov >= 0.25:
-        return "partial"
-    return "none"
-
-
-def sidewalk_inventory_quality(properties: dict) -> str:
-    rating = str(properties.get("SWCIRating", "")).lower()
-    sidewalk_type = str(properties.get("SidewalkType", "")).lower()
-    condition = str(properties.get("ObservedCondition", "")).lower()
-
-    if "no sidewalk" in rating or "no sw" in sidewalk_type or "no sw" in condition:
-        return "none"
-    if "excellent" in rating or "good" in rating:
-        return "full"
-    if "fair" in rating or "poor" in rating:
-        return "partial"
-    return "full"
-
-
-def fetch_arc_sidewalks() -> dict:
-    features = []
-
-    try:
-        with httpx.Client(timeout=12) as client:
-            for offset in range(0, 20000, SIDEWALK_PAGE_SIZE):
-                response = client.get(
-                    SIDEWALK_SERVICE_URL,
-                    params={
-                        "f": "geojson",
-                        "where": "1=1",
-                        "outFields": "OBJECTID,SW_ID,StreetName,SidewalkType,ObservedCondition,SWCIRating",
-                        "returnGeometry": "true",
-                        "outSR": "4326",
-                        "geometry": MARTA_AREA_ENVELOPE,
-                        "geometryType": "esriGeometryEnvelope",
-                        "inSR": "4326",
-                        "spatialRel": "esriSpatialRelIntersects",
-                        "resultRecordCount": str(SIDEWALK_PAGE_SIZE),
-                        "resultOffset": str(offset),
-                    },
-                )
-                response.raise_for_status()
-                page_features = response.json().get("features", [])
-
-                for feature in page_features:
-                    if feature.get("geometry", {}).get("type") != "LineString":
-                        continue
-                    properties = feature.get("properties") or {}
-                    properties["quality"] = sidewalk_inventory_quality(properties)
-                    if properties["quality"] == "none":
-                        continue
-                    feature["properties"] = properties
-                    features.append(feature)
-
-                if len(page_features) < SIDEWALK_PAGE_SIZE:
-                    break
-    except Exception:
-        logger.exception("ARC sidewalk fetch failed")
-        return {"type": "FeatureCollection", "features": []}
-
-    return {"type": "FeatureCollection", "features": features}
 
 
 # =========================================================================
@@ -174,37 +101,6 @@ def score_routes(request: ScoreRequest, http_request: Request) -> ScoreResponse:
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok")
-
-
-@router.get("/api/sidewalks/")
-def get_sidewalks(http_request: Request) -> dict:
-    segment_store = http_request.app.state.segment_store
-    gdf = segment_store.gdf
-
-    if gdf.empty:
-        return fetch_arc_sidewalks()
-
-    sidewalks = gdf.to_crs(4326)
-    features = []
-    for _, row in sidewalks.iterrows():
-        geometry = row.geometry
-        if geometry.geom_type != "LineString":
-            continue
-        quality = sidewalk_quality(row.get("sidewalk_cov"))
-        if quality == "none":
-            continue
-
-        features.append(
-            {
-                "type": "Feature",
-                "properties": {
-                    "quality": quality,
-                },
-                "geometry": geometry.__geo_interface__,
-            }
-        )
-
-    return {"type": "FeatureCollection", "features": features}
 
 
 @router.post("/score", response_model=ScoreResponse)
@@ -285,6 +181,26 @@ async def get_gap_reports() -> list[GapReport]:
         raise HTTPException(status_code=502, detail=f"gap_reports read error: {exc}") from exc
 
     return [GapReport(**row) for row in rows]
+
+
+@router.post("/gap-reports", response_model=GapReport)
+async def post_gap_report(report: GapReportCreate) -> GapReport:
+    """Create a crowdsourced gap report without a photo."""
+    try:
+        row = await run_in_threadpool(
+            create_gap_report,
+            report.lng,
+            report.lat,
+            report.note or "",
+            report.type,
+        )
+    except GapReportError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("gap-report create failed")
+        raise HTTPException(status_code=502, detail=f"gap_reports insert error: {exc}") from exc
+
+    return GapReport(**row)
 
 
 @router.patch("/gap-reports/{report_id}", response_model=GapReport)
