@@ -46,6 +46,120 @@ const SLIDER_DEFAULTS: Record<"light" | "dark", Record<PreferenceKey, number>> =
 
 const RealMap = dynamic(() => import("./components/RealMap"), { ssr: false });
 
+type RouteStep = {
+  icon: "straight" | "left" | "right" | "pin";
+  text: string;
+  distance: string;
+};
+
+// Great-circle distance in meters (Haversine).
+function haversine(a: [number, number], b: [number, number]): number {
+  const R = 6371000;
+  const lat1 = (a[1] * Math.PI) / 180;
+  const lat2 = (b[1] * Math.PI) / 180;
+  const dLat = ((b[1] - a[1]) * Math.PI) / 180;
+  const dLon = ((b[0] - a[0]) * Math.PI) / 180;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+// Initial bearing from a→b in degrees clockwise from north.
+function bearing(a: [number, number], b: [number, number]): number {
+  const lat1 = (a[1] * Math.PI) / 180;
+  const lat2 = (b[1] * Math.PI) / 180;
+  const dLon = ((b[0] - a[0]) * Math.PI) / 180;
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+  return (((Math.atan2(y, x) * 180) / Math.PI) + 360) % 360;
+}
+
+// Signed turn angle from→to, normalized to (-180, 180]. + = right, − = left.
+function bearingDelta(from: number, to: number): number {
+  let d = to - from;
+  while (d > 180) d -= 360;
+  while (d <= -180) d += 360;
+  return d;
+}
+
+function metersToFriendly(m: number): string {
+  if (m < 1) return "<1 ft";
+  if (m < 305) {
+    // Round to nearest 10 ft for legibility.
+    const ft = Math.max(10, Math.round((m * 3.281) / 10) * 10);
+    return `${ft} feet`;
+  }
+  return `${(Math.round((m / 1609.34) * 10) / 10).toFixed(1)} mi`;
+}
+
+// Derive a short turn-by-turn list from a route's LineString geometry. Works
+// for both backend per-segment FeatureCollections and the OSRM fallback (one
+// feature). Bearing-delta detection with a small-leg cooldown to avoid stacking
+// turns on curves.
+function buildRouteSteps(
+  features: GeoJSON.FeatureCollection | null,
+  destination: string,
+): RouteStep[] {
+  if (!features?.features?.length) return [];
+
+  // Flatten all linestrings, dropping consecutive duplicate vertices at joins.
+  const coords: [number, number][] = [];
+  for (const f of features.features) {
+    if (f.geometry?.type !== "LineString") continue;
+    for (const c of f.geometry.coordinates as [number, number][]) {
+      const last = coords[coords.length - 1];
+      if (!last || last[0] !== c[0] || last[1] !== c[1]) coords.push(c);
+    }
+  }
+  if (coords.length < 2) return [];
+
+  const TURN_THRESHOLD = 35; // degrees — below this is "continue"
+  const MIN_LEG_M = 30;       // require at least 30 m between turns
+  const MAX_STEPS = 10;
+
+  type Leg = { icon: "straight" | "left" | "right"; text: string; distance: number };
+  const legs: Leg[] = [
+    { icon: "straight", text: "Head out from your starting point.", distance: 0 },
+  ];
+
+  for (let i = 1; i < coords.length; i++) {
+    legs[legs.length - 1].distance += haversine(coords[i - 1], coords[i]);
+
+    if (i >= coords.length - 1) break;
+    if (legs[legs.length - 1].distance < MIN_LEG_M) continue;
+
+    const delta = bearingDelta(
+      bearing(coords[i - 1], coords[i]),
+      bearing(coords[i], coords[i + 1]),
+    );
+    if (Math.abs(delta) >= TURN_THRESHOLD) {
+      legs.push({
+        icon: delta > 0 ? "right" : "left",
+        text: delta > 0 ? "Turn right and continue." : "Turn left and continue.",
+        distance: 0,
+      });
+    }
+  }
+
+  const trimmed = legs.slice(0, MAX_STEPS);
+  if (legs.length > MAX_STEPS) {
+    // Fold the dropped legs' distance into the last kept leg so the total
+    // walk distance shown in the popup still matches the route.
+    const tail = legs.slice(MAX_STEPS).reduce((sum, leg) => sum + leg.distance, 0);
+    trimmed[trimmed.length - 1].distance += tail;
+  }
+  const steps: RouteStep[] = trimmed.map((leg) => ({
+    icon: leg.icon,
+    text: leg.text,
+    distance: metersToFriendly(leg.distance),
+  }));
+  steps.push({
+    icon: "pin",
+    text: `Arrive at ${destination || "your destination"}.`,
+    distance: "Destination",
+  });
+  return steps;
+}
+
 async function geocodeDestination(query: string): Promise<[number, number] | null> {
   const trimmed = query.trim();
   if (!trimmed) return null;
@@ -283,6 +397,7 @@ export default function Home() {
           theme={theme}
           onRouteStatus={setRouteStatus}
           routeFeatures={routeFeatures}
+          routeStats={routeStats}
           gapReports={gapReports}
           onNewReport={upsertGapReport}
         />
@@ -692,6 +807,7 @@ function MapPanel({
   theme,
   onRouteStatus,
   routeFeatures,
+  routeStats,
   gapReports,
   onNewReport
 }: {
@@ -704,6 +820,7 @@ function MapPanel({
   theme: "light" | "dark";
   onRouteStatus: (status: RouteStatus) => void;
   routeFeatures: GeoJSON.FeatureCollection | null;
+  routeStats: Record<RouteChoice, RouteStats> | null;
   gapReports: GapReport[];
   onNewReport: (report: GapReport) => void;
 }) {
@@ -777,21 +894,12 @@ function MapPanel({
   const [sidewalkVisible, setSidewalkVisible] = useState(true);
   const [sidewalkReady, setSidewalkReady] = useState(false);
 
-  const routeSteps = selectedRoute === "safe"
-    ? [
-        { icon: "straight", text: "Head out from your starting point.", distance: "200 feet" },
-        { icon: "right", text: "Turn right onto the green sidewalk route.", distance: "0.2 miles" },
-        { icon: "straight", text: "Continue toward Jonesboro Road.", distance: "0.3 miles" },
-        { icon: "left", text: "Turn left at the safer marked crossing.", distance: "250 feet" },
-        { icon: "pin", text: `Arrive at ${destination || "your destination"}.`, distance: "Destination" }
-      ]
-    : [
-        { icon: "straight", text: "Head out from your starting point.", distance: "200 feet" },
-        { icon: "right", text: "Turn right onto the direct route.", distance: "0.2 miles" },
-        { icon: "straight", text: "Continue near the high traffic crossing.", distance: "0.3 miles" },
-        { icon: "left", text: "Turn left past the missing sidewalk segment.", distance: "400 feet" },
-        { icon: "pin", text: `Arrive at ${destination || "your destination"}.`, distance: "Destination" }
-      ];
+  const routeSteps = useMemo(
+    () => buildRouteSteps(routeFeatures, destination),
+    [routeFeatures, destination],
+  );
+
+  const headerStats = routeStats?.[selectedRoute];
 
   return (
     <section className="map-panel">
@@ -827,16 +935,16 @@ function MapPanel({
           </span>
         </button>
       </div>
-      {routeStatus === "done" && (
+      {routeStatus === "done" && routeSteps.length > 0 && (
         <div className="directions-widget">
           <div className="directions-panel">
             <header>
-              <strong>{selectedRoute === "safe" ? routeData.safe_route.duration_min : routeData.default_route.duration_min} min walking</strong>
-              <span>{selectedRoute === "safe" ? routeData.safe_route.distance_mi : routeData.default_route.distance_mi} mi</span>
+              <strong>{headerStats ? headerStats.minutes : "—"} min walking</strong>
+              <span>{headerStats ? headerStats.miles : "—"} mi</span>
             </header>
             <ol>
-              {routeSteps.map((step) => (
-                <li key={step.text}>
+              {routeSteps.map((step, index) => (
+                <li key={`${step.icon}-${index}`}>
                   <DirectionIcon type={step.icon} />
                   <span>
                     <strong>{step.text}</strong>

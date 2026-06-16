@@ -1,10 +1,8 @@
 "use client";
 
 import "maplibre-gl/dist/maplibre-gl.css";
-import MapLibreGlDirections, { LoadingIndicatorControl, layersFactory } from "@maplibre/maplibre-gl-directions";
 import maplibregl, {
   type DataDrivenPropertyValueSpecification,
-  type LayerSpecification,
   type StyleSpecification
 } from "maplibre-gl";
 import { useEffect, useRef, useState } from "react";
@@ -194,35 +192,6 @@ function ensureSidewalkBelowRoute(map: maplibregl.Map) {
   map.moveLayer(sidewalkLayerId, routeLayerId);
 }
 
-function directionLayers(routeChoice: RouteChoice) {
-  return layersFactory().map((layer) => {
-    if (layer.id === "maplibre-gl-directions-routeline") {
-      return {
-        ...layer,
-        paint: {
-          ...layer.paint,
-          "line-width": 9,
-          "line-opacity": 0
-        }
-      };
-    }
-
-    if (layer.id === "maplibre-gl-directions-alt-routeline") {
-      return {
-        ...layer,
-        paint: {
-          ...layer.paint,
-          "line-color": "#aaa69d",
-          "line-width": 4,
-          "line-opacity": 0
-        }
-      };
-    }
-
-    return layer;
-  }) as LayerSpecification[];
-}
-
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, "&amp;")
@@ -293,8 +262,8 @@ export default function RealMap({
 }: RealMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const directionsRef = useRef<MapLibreGlDirections | null>(null);
-  const loadingControlRef = useRef<LoadingIndicatorControl | null>(null);
+  const startMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const endMarkerRef = useRef<maplibregl.Marker | null>(null);
   const gapMarkersRef = useRef<maplibregl.Marker[]>([]);
   const pendingMarkerRef = useRef<maplibregl.Marker | null>(null);
   const pickingRef = useRef(pickingLocation);
@@ -305,42 +274,6 @@ export default function RealMap({
   // Keep the click handler reading the latest picking state / callback.
   pickingRef.current = pickingLocation;
   onPickRef.current = onPickLocation;
-
-  const destroyDirections = () => {
-    if (!directionsRef.current) return;
-
-    try {
-      directionsRef.current.destroy();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "";
-      if (!message.includes("Cannot remove non-existing layer")) {
-        throw error;
-      }
-    } finally {
-      directionsRef.current = null;
-    }
-  };
-
-  const setupDirections = (map: maplibregl.Map) => {
-    destroyDirections();
-    directionsRef.current = new MapLibreGlDirections(map, {
-      api: "https://router.project-osrm.org/route/v1",
-      profile: "foot",
-      requestOptions: {
-        alternatives: "true",
-        overview: "full",
-        geometries: "geojson"
-      },
-      layers: directionLayers(selectedRoute)
-    });
-    directionsRef.current.interactive = true;
-    directionsRef.current.setWaypoints(startCoords ? [startCoords] : []);
-
-    if (!loadingControlRef.current) {
-      loadingControlRef.current = new LoadingIndicatorControl(directionsRef.current);
-      map.addControl(loadingControlRef.current, "bottom-right");
-    }
-  };
 
   const setupSidewalkLayer = async (map: maplibregl.Map) => {
     try {
@@ -415,7 +348,6 @@ export default function RealMap({
 
       map.on("load", () => {
         void setupSidewalkLayer(map);
-        setupDirections(map);
         setMapReady(true);
       });
 
@@ -435,7 +367,6 @@ export default function RealMap({
 
     return () => {
       cancelled = true;
-      destroyDirections();
       mapRef.current?.remove();
       mapRef.current = null;
     };
@@ -452,12 +383,10 @@ export default function RealMap({
       const style = await loadRoadOnlyStyle(theme);
       if (cancelled) return;
 
-      destroyDirections();
       currentMap.setStyle(style);
       currentMap.once("idle", () => {
         if (cancelled) return;
         void setupSidewalkLayer(currentMap);
-        setupDirections(currentMap);
       });
     }
 
@@ -486,13 +415,10 @@ export default function RealMap({
 
   // Draw the safety-scored route from the backend (page owns fetch + status).
   // routeFeatures changes whenever a new route comes back; we render its geometry
-  // and place the start/end waypoint markers.
+  // and fit the viewport. Start/end markers are handled in a separate effect.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !routeFeatures || !startCoords || !destinationCoords) return;
-
-    // Place start/end markers (MapLibreGlDirections computes its own line invisibly).
-    directionsRef.current?.setWaypoints([startCoords, destinationCoords]).catch(() => {});
 
     drawRouteFeatures(map, routeFeatures, theme);
     ensureSidewalkBelowRoute(map);
@@ -509,6 +435,38 @@ export default function RealMap({
     if (!map) return;
     map.getCanvas().style.cursor = pickingLocation ? "crosshair" : "";
   }, [pickingLocation, mapReady]);
+
+  // Start/end pins. Non-draggable by default — users can't accidentally
+  // relocate the endpoints by grabbing them on the map. Once a route is
+  // computed we anchor the pins to the route's actual endpoints (the backend
+  // snaps picks to the nearest graph node within ~300 m, so the raw picked
+  // coord sits slightly off the route line). Before a route exists we use
+  // the raw picked coord so the user gets immediate feedback as they pick.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    const lineFeatures =
+      routeFeatures?.features.filter(
+        (f): f is GeoJSON.Feature<GeoJSON.LineString> => f.geometry?.type === "LineString",
+      ) ?? [];
+    const firstCoords = lineFeatures[0]?.geometry.coordinates as [number, number][] | undefined;
+    const lastCoords =
+      lineFeatures[lineFeatures.length - 1]?.geometry.coordinates as [number, number][] | undefined;
+    const startAnchor = (firstCoords?.[0] as [number, number] | undefined) ?? startCoords;
+    const endAnchor =
+      (lastCoords?.[lastCoords.length - 1] as [number, number] | undefined) ?? destinationCoords;
+
+    startMarkerRef.current?.remove();
+    startMarkerRef.current = startAnchor
+      ? new maplibregl.Marker({ color: "#1D9E75" }).setLngLat(startAnchor).addTo(map)
+      : null;
+
+    endMarkerRef.current?.remove();
+    endMarkerRef.current = endAnchor
+      ? new maplibregl.Marker({ color: "#c0392b" }).setLngLat(endAnchor).addTo(map)
+      : null;
+  }, [startCoords, destinationCoords, routeFeatures, mapReady]);
 
   // Render a pin for every existing/live gap report. Markers are DOM overlays, so
   // they survive theme restyles and update in place when the report list changes.
