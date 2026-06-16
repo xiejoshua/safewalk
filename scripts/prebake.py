@@ -13,9 +13,9 @@ Pipeline:
   7. Build sidecar JSON with per-column stats + canary warnings
   8. Atomic write: tmpfile → os.replace(final_path)
 
-Output:
-  backend/data/scored_segments.parquet     — R2's backend reads from here
-  backend/data/scored_segments.meta.json   — receipts + canary warnings
+Output (tracked, pushable — backend/data/ is gitignored):
+  outputs/scored_segments.parquet     — scored network for the backend to read
+  outputs/scored_segments.meta.json   — receipts + canary warnings
 
 This is the canonical pipeline. `backend/scripts/run_overlay.py` is left
 in place for now but is functionally superseded.
@@ -61,8 +61,8 @@ from layers import canopy, crash, exposure, flooding, hazards, slope  # noqa: E4
 from layers.traffic import _parse_lanes_count, _parse_maxspeed_mph  # noqa: E402
 
 CORRIDOR_PATH = REPO / "corridor.json"
-OUT_PARQUET = REPO / "backend" / "data" / "scored_segments.parquet"
-OUT_SIDECAR = REPO / "backend" / "data" / "scored_segments.meta.json"
+OUT_PARQUET = REPO / "outputs" / "scored_segments.parquet"
+OUT_SIDECAR = REPO / "outputs" / "scored_segments.meta.json"
 
 FACTOR_COLUMNS: list[str] = [
     "sidewalk_cov",
@@ -75,6 +75,15 @@ FACTOR_COLUMNS: list[str] = [
     "crossing_penalty",
     "flooding",
 ]
+
+# Columns that are legitimately uniform across the corridor — do not fire the
+# "1 distinct value" canary for these.
+#   flooding:      all-0.0 is valid when no segment intersects an SFHA polygon.
+#   exposure_norm: ERA5's ~25 km grid is coarser than the ~5 km corridor, so the
+#                  base reading is uniform by design (see exposure.py docstring).
+#                  apply_exposure_shade() reintroduces variation when canopy is
+#                  available, but uniformity alone is not a failure signal.
+EXPECTED_UNIFORM: set[str] = {"flooding", "exposure_norm"}
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("prebake")
@@ -198,6 +207,25 @@ def run_r4_factors(segments: gpd.GeoDataFrame, skip: set[str], no_r4: bool):
 # Post-processing
 # =========================================================================
 
+def apply_exposure_shade(segments: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Modulate uniform heat exposure by local tree shade: exposure × (1 − canopy).
+
+    ERA5's ~25 km grid makes exposure_norm uniform across the corridor; canopy_pct
+    reintroduces spatial variation (shaded segments feel less heat). Only applied
+    when canopy actually varies, so a failed/zeroed canopy run never wipes exposure.
+    """
+    if "exposure_norm" not in segments.columns or "canopy_pct" not in segments.columns:
+        return segments
+    if segments["canopy_pct"].nunique() <= 1:
+        log.info("exposure: canopy uniform/unavailable — leaving exposure_norm unmodulated")
+        return segments
+    segments["exposure_norm"] = (
+        (1.0 - segments["canopy_pct"]) * segments["exposure_norm"]
+    ).clip(0.0, 1.0)
+    log.info("exposure: modulated by canopy shade (mean=%.3f)", segments["exposure_norm"].mean())
+    return segments
+
+
 def merge_barriers(segments: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Single `barrier` column = crossing-side OR slope-side. Drops intermediates."""
     bc = segments["_barrier_crossing"].fillna(False).astype(bool)
@@ -283,7 +311,7 @@ def build_sidecar(
             continue
         stats = _column_stats(segments[col])
         columns_report[col] = stats
-        if stats.get("distinct") == 1 and col != "flooding":
+        if stats.get("distinct") == 1 and col not in EXPECTED_UNIFORM:
             mean_v = stats.get("mean")
             canary.append(
                 f"{col} has only 1 distinct value (mean={mean_v}); module may have silently failed."
@@ -372,6 +400,7 @@ def main() -> int:
     segments = build_full_network(corridor["name"])
     segments = run_r3_factors(segments)
     segments, r4_warnings = run_r4_factors(segments, skip=set(args.skip), no_r4=args.no_r4)
+    segments = apply_exposure_shade(segments)
     segments = merge_barriers(segments)
     segments = coerce_numeric(segments)
     assert_no_nan(segments, FACTOR_COLUMNS)

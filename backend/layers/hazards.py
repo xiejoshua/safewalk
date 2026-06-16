@@ -27,7 +27,11 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-_DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "ATL311_Service_Requests.geojson"
+_DATA_FILE = (
+    Path(__file__).resolve().parent.parent
+    / "data"
+    / "Citizen_Requests_and_Calls__2016_to_2019_.geojson"
+)
 _HAZARD_RADIUS_M = 20.0
 
 # ATL311 TaskType → hazard vocab mapping
@@ -64,27 +68,42 @@ HAZARD_W: dict[str, float] = {
 }
 
 
+def _empty_hazards() -> gpd.GeoDataFrame:
+    return gpd.GeoDataFrame(
+        {"geometry": gpd.GeoSeries([], crs=32616), "hazard_type": [], "weight": []},
+        crs=32616,
+    )
+
+
 def _load_atl311() -> gpd.GeoDataFrame:
     """Load ATL311 sidewalk-related reports.
 
-    Returns empty GDF if file absent or no matching rows (expected for Clayton County).
+    Returns an empty GDF if the file is absent, lacks the expected columns, or has
+    no matching rows (all expected for the Clayton County corridor — ATL311 only
+    covers the City of Atlanta). Never raises so prebake never zeroes on a crash.
     """
     if not _DATA_FILE.exists():
         logger.debug("hazards.py: ATL311 file not found; returning empty")
-        return gpd.GeoDataFrame(
-            {"geometry": gpd.GeoSeries([], crs=32616), "hazard_type": [], "weight": []},
-            crs=32616,
-        )
+        return _empty_hazards()
 
     raw = gpd.read_file(_DATA_FILE)
+
+    required = {"RequestType", "TaskType"}
+    if not required.issubset(raw.columns):
+        logger.warning(
+            "hazards.py: %s missing expected columns %s; returning empty",
+            _DATA_FILE.name, sorted(required - set(raw.columns)),
+        )
+        return _empty_hazards()
+
+    # Many ATL311 rows carry a null geometry — drop them before any spatial op.
+    raw = raw[raw.geometry.notna() & ~raw.geometry.is_empty].copy()
+
     mask = raw["RequestType"] == "Field Services Sidewalk"
     sidewalk = raw[mask].copy()
 
     if sidewalk.empty:
-        return gpd.GeoDataFrame(
-            {"geometry": gpd.GeoSeries([], crs=32616), "hazard_type": [], "weight": []},
-            crs=32616,
-        )
+        return _empty_hazards()
 
     sidewalk["hazard_type"] = sidewalk["TaskType"].map(TASK_TYPE_MAP).fillna("other")
     sidewalk["weight"] = sidewalk["hazard_type"].map(HAZARD_W).fillna(HAZARD_W["other"])
@@ -104,10 +123,7 @@ def _load_gap_reports() -> gpd.GeoDataFrame:
     if not supabase_url or not supabase_key:
         # Null policy: Supabase not configured → empty (offline-safe)
         logger.debug("SUPABASE_URL/SUPABASE_ANON_KEY not set; skipping gap_reports")
-        return gpd.GeoDataFrame(
-            {"geometry": gpd.GeoSeries([], crs=32616), "hazard_type": [], "weight": []},
-            crs=32616,
-        )
+        return _empty_hazards()
 
     try:
         from supabase import create_client
@@ -117,10 +133,7 @@ def _load_gap_reports() -> gpd.GeoDataFrame:
         rows = sb.table("gap_reports").select("id,geom,type").execute().data
 
         if not rows:
-            return gpd.GeoDataFrame(
-                {"geometry": gpd.GeoSeries([], crs=32616), "hazard_type": [], "weight": []},
-                crs=32616,
-            )
+            return _empty_hazards()
 
         geoms = []
         hazard_types = []
@@ -152,10 +165,7 @@ def _load_gap_reports() -> gpd.GeoDataFrame:
 
     except Exception as exc:
         logger.warning("gap_reports: Supabase read failed (%s); using empty fallback", exc)
-        return gpd.GeoDataFrame(
-            {"geometry": gpd.GeoSeries([], crs=32616), "hazard_type": [], "weight": []},
-            crs=32616,
-        )
+        return _empty_hazards()
 
 
 def score(segments: gpd.GeoDataFrame) -> pd.Series:

@@ -1,18 +1,28 @@
 """canopy.py — canopy_pct factor module.
 
-Data source: Meta/WRI 1 m canopy height — Cloud Optimized GeoTIFF on AWS S3
-             Accessed via rioxarray at runtime (no local download required)
-             Falls back to 0.0 if the raster is unreachable (offline-safe)
+Data source: Meta/WRI canopy-height model (v1 `alsgedi_global_v6_float`)
+             EPSG:4326 10-degree COG tiles on AWS S3 (public, no key):
+             forests/v1/alsgedi_global_v6_float_epsg4326_v3_10deg/
+                 meta_chm_lat=<N-edge>_lon=<W-edge>_cover5m.tif
+             `cover5m` = fraction of ground covered by canopy >= 5 m, stored as a
+             per-mille integer (0-1000) at ~28 m (0.00025 deg) resolution. The
+             >=5 m threshold isolates real shade canopy from ground vegetation.
 
-Scoring: % of 5 m buffer around each segment with canopy height >= 3 m
-         (height threshold isolates real shade canopy vs. ground vegetation)
+             NOTE: Meta retired the old single-file `tree_height_geo_*.tif` COG;
+             the dataset is now tiled. The correct 10-degree tile is derived from
+             the corridor bbox at runtime.
 
-Null policy: no valid pixels in 5 m buffer → canopy_pct = 0.0
+Scoring: canopy_pct = cover5m / 1000 sampled at each segment's representative
+         point (nearest pixel). At ~28 m resolution a sub-pixel 5 m buffer adds
+         nothing, so we sample the point directly.
+
+Null policy: raster unreachable, or segment outside the tile → canopy_pct = 0.0
              (unknown coverage treated as no shade, not full shade)
 """
 from __future__ import annotations
 
 import logging
+import math
 
 import geopandas as gpd
 import numpy as np
@@ -22,69 +32,89 @@ logger = logging.getLogger(__name__)
 
 # Clayton County clip bbox: (min_lon, min_lat, max_lon, max_lat) in WGS84
 _CLAYTON_BBOX = (-84.5, 33.5, -84.2, 33.8)
-_BUFFER_M = 5.0
-_HEIGHT_THRESHOLD_M = 3.0
 
-_COG_HTTP = (
-    "https://dataforgood-fb-data.s3.amazonaws.com/forests/tree_height_geo_20201119_v0/"
-    "tfcanopy_20201119_geo.tif"
+# Meta cover5m is stored as a per-mille integer (0-1000); divide to get [0, 1].
+_COVER_SCALE = 1000.0
+
+_COG_BASE = (
+    "https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/"
+    "alsgedi_global_v6_float_epsg4326_v3_10deg"
 )
 
 
-def _open_canopy_raster():
-    """Open Meta/WRI COG via rioxarray; returns None on failure."""
+def _tile_url(lon: float, lat: float) -> str:
+    """COG URL for the 10-degree cover5m tile containing (lon, lat).
+
+    Tiles are named by their NW corner: lon = west edge (floor to 10),
+    lat = north edge (ceil to 10). Tile spans [lon, lon+10] x [lat-10, lat].
+    """
+    west_edge = math.floor(lon / 10.0) * 10.0
+    north_edge = math.ceil(lat / 10.0) * 10.0
+    return f"{_COG_BASE}/meta_chm_lat={north_edge:.1f}_lon={west_edge:.1f}_cover5m.tif"
+
+
+def _open_canopy_raster(lon: float, lat: float):
+    """Open the Meta cover5m COG tile for (lon, lat) via rioxarray.
+
+    A missing rioxarray is a deployment error and is re-raised loudly. A network
+    / raster failure returns None so callers fall back to the null policy.
+    """
     try:
         import rioxarray as rxr
+    except ImportError as exc:
+        raise RuntimeError(
+            "canopy.py requires rioxarray. "
+            "Run `pip install rioxarray` in the prebake environment and retry."
+        ) from exc
 
-        da = rxr.open_rasterio(_COG_HTTP, masked=True, lock=False)
+    url = _tile_url(lon, lat)
+    try:
+        da = rxr.open_rasterio(url, masked=True, lock=False)
+        logger.info("canopy.py: opened cover5m tile %s", url.rsplit("/", 1)[-1])
         return da
     except Exception as exc:
-        logger.warning("canopy.py: could not open COG raster (%s); returning 0.0 for all segments", exc)
+        logger.warning(
+            "canopy.py: could not open COG tile %s (%s); returning 0.0 for all segments",
+            url, exc,
+        )
         return None
 
 
 def score(segments: gpd.GeoDataFrame) -> pd.Series:
     """Return canopy_pct in [0, 1] indexed by segment_id."""
-    raster = _open_canopy_raster()
+    zeros = pd.Series(0.0, index=segments["segment_id"], dtype=float)
 
+    # Pick the tile from the corridor's centre (all segments share one 10-deg tile).
+    centre_lon = (_CLAYTON_BBOX[0] + _CLAYTON_BBOX[2]) / 2.0
+    centre_lat = (_CLAYTON_BBOX[1] + _CLAYTON_BBOX[3]) / 2.0
+    raster = _open_canopy_raster(centre_lon, centre_lat)
     if raster is None:
-        # Null policy: raster unreachable → 0.0 (unknown, not no-shade)
         logger.warning("canopy.py: offline fallback — all segments get canopy_pct = 0.0")
-        return pd.Series(0.0, index=segments["segment_id"], dtype=float)
+        return zeros
 
     try:
-        da = raster.rio.clip_box(*_CLAYTON_BBOX)
-        data = da.squeeze().values  # (H, W)
-        transform = da.rio.transform()
+        import xarray as xr
 
-        segs_m = segments.to_crs(32616).copy()
-        segs_m["_buf"] = segs_m.geometry.buffer(_BUFFER_M)
+        # Clip to the corridor bbox so the read is small, then sample each segment's
+        # representative point at the nearest pixel.
+        clip = raster.rio.clip_box(*_CLAYTON_BBOX).squeeze(drop=True)
 
-        from rasterio.features import geometry_mask
+        pts = segments.to_crs(4326).geometry.representative_point()
+        xs = xr.DataArray(pts.x.to_numpy(), dims="seg")
+        ys = xr.DataArray(pts.y.to_numpy(), dims="seg")
 
-        bufs_wgs = segs_m.set_geometry("_buf").to_crs(4326)
+        sampled = clip.sel(x=xs, y=ys, method="nearest").to_numpy().astype(float)
+        # Null policy: pixels outside the tile / nodata → 0.0 canopy.
+        sampled = np.nan_to_num(sampled, nan=0.0)
+        canopy_pct = np.clip(sampled / _COVER_SCALE, 0.0, 1.0)
 
-        results: list[float] = []
-        for _, row in bufs_wgs.iterrows():
-            try:
-                mask = geometry_mask(
-                    [row["_buf"].__geo_interface__],
-                    out_shape=data.shape,
-                    transform=transform,
-                    invert=True,
-                )
-                pixels = data[mask]
-                valid = pixels[~np.isnan(pixels)]
-                if len(valid) == 0:
-                    # Null policy: no valid pixels → 0.0
-                    results.append(0.0)
-                else:
-                    results.append(float((valid >= _HEIGHT_THRESHOLD_M).mean()))
-            except Exception:
-                results.append(0.0)
-
-        return pd.Series(results, index=segments["segment_id"], dtype=float).clip(0.0, 1.0)
+        result = pd.Series(canopy_pct, index=segments["segment_id"], dtype=float)
+        logger.info(
+            "canopy.py: sampled %d segments (mean=%.3f, max=%.3f)",
+            len(result), float(result.mean()), float(result.max()),
+        )
+        return result
 
     except Exception as exc:
         logger.warning("canopy.py: raster processing failed (%s); returning 0.0", exc)
-        return pd.Series(0.0, index=segments["segment_id"], dtype=float)
+        return zeros

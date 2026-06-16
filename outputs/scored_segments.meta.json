@@ -1,0 +1,116 @@
+{
+  "corridor_name": "gillem-logistics-corridor",
+  "bbox": [
+    -84.37,
+    33.58,
+    -84.29,
+    33.65
+  ],
+  "row_count": 30723,
+  "crs": "EPSG:4326",
+  "generated_at": "2026-06-16T03:10:22.774710+00:00",
+  "git_head": "1fe68874075997a14ba04d149a589208e55841ed",
+  "osm_cache_sha256": "e3797621b904b7c4c07dab34c3c3fd54696b2fc94b217a3bca5c48aa77385aee",
+  "columns": {
+    "sidewalk_cov": {
+      "count": 30723,
+      "nan": 0,
+      "distinct": 1713,
+      "mean": 0.11090482158193202,
+      "min": 0.0,
+      "max": 1.0,
+      "stddev": 0.28141412134714516
+    },
+    "traffic_risk": {
+      "count": 30723,
+      "nan": 0,
+      "distinct": 53,
+      "mean": 0.2104683683179915,
+      "min": 0.0,
+      "max": 0.91,
+      "stddev": 0.1939175616394876
+    },
+    "crash_norm": {
+      "count": 30723,
+      "nan": 0,
+      "distinct": 16,
+      "mean": 0.0032874393776649415,
+      "min": 0.0,
+      "max": 1.0,
+      "stddev": 0.030257948558539895
+    },
+    "hazard_norm": {
+      "count": 30723,
+      "nan": 0,
+      "distinct": 1,
+      "mean": 0.0,
+      "min": 0.0,
+      "max": 0.0,
+      "stddev": 0.0
+    },
+    "canopy_pct": {
+      "count": 30723,
+      "nan": 0,
+      "distinct": 625,
+      "mean": 0.14803655242001107,
+      "min": 0.0,
+      "max": 1.0,
+      "stddev": 0.2549835594373655
+    },
+    "exposure_norm": {
+      "count": 30723,
+      "nan": 0,
+      "distinct": 625,
+      "mean": 0.26346043569185545,
+      "min": 0.0,
+      "max": 0.3092391304347828,
+      "stddev": 0.07885089419557666
+    },
+    "slope_risk": {
+      "count": 30723,
+      "nan": 0,
+      "distinct": 1,
+      "mean": 0.0,
+      "min": 0.0,
+      "max": 0.0,
+      "stddev": 0.0
+    },
+    "crossing_penalty": {
+      "count": 30723,
+      "nan": 0,
+      "distinct": 12,
+      "mean": 0.0002699931647300068,
+      "min": 0.0,
+      "max": 0.1875,
+      "stddev": 0.004496797776721676
+    },
+    "flooding": {
+      "count": 30723,
+      "nan": 0,
+      "distinct": 2,
+      "mean": 0.014842300556586271,
+      "min": 0.0,
+      "max": 1.0,
+      "stddev": 0.12092345767702734
+    },
+    "barrier": {
+      "count": 30723,
+      "nan": 0,
+      "distinct": 2
+    }
+  },
+  "r4_module_failures": [
+    "slope skipped (no_r4 or --skip)"
+  ],
+  "canary_warnings": [
+    "hazard_norm has only 1 distinct value (mean=0.0); module may have silently failed.",
+    "slope_risk has only 1 distinct value (mean=0.0); module may have silently failed."
+  ],
+  "head_segment_ids": [
+    "1000728744-0000",
+    "1000728744-0001",
+    "1000728744-0002",
+    "1000728744-0003",
+    "1000728744-0004"
+  ]
+}
