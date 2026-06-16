@@ -11,6 +11,9 @@ import { useEffect, useRef } from "react";
 
 const styleUrl = "https://tiles.openfreemap.org/styles/liberty";
 const initialCenter: [number, number] = [-84.4194, 33.689];
+const sidewalkSourceId = "sidewalks";
+const sidewalkLayerId = "sidewalk-layer";
+const routeLayerId = "safewalk-gradient-route-line";
 export type RouteStatus = "idle" | "loading" | "error" | "done";
 export type RouteChoice = "safe" | "default";
 export type ThemeMode = "light" | "dark";
@@ -22,6 +25,8 @@ type RealMapProps = {
   routeRequest: number;
   selectedRoute: RouteChoice;
   theme: ThemeMode;
+  sidewalkVisible: boolean;
+  onSidewalkLayerAvailable: (available: boolean) => void;
   onRouteStatus: (status: RouteStatus) => void;
 };
 
@@ -134,7 +139,8 @@ async function loadRoadOnlyStyle(theme: ThemeMode) {
   delete style.sprite;
   style.layers = style.layers?.filter((layer) => {
     const hasIcon = Boolean(layer.layout?.["icon-image"]);
-    return !hasIcon && !hiddenLayers.includes(layer.id);
+    const hasPattern = Object.keys(layer.paint ?? {}).some((key) => key.includes("pattern"));
+    return !hasIcon && !hasPattern && !hiddenLayers.includes(layer.id);
   });
 
   if (theme === "dark") {
@@ -237,7 +243,7 @@ function drawWeightedRoute(map: maplibregl.Map, segments: WeightedRouteSegment[]
   });
 
   map.addLayer({
-    id: "safewalk-gradient-route-line",
+    id: routeLayerId,
     type: "line",
     source: "safewalk-gradient-route",
     paint: {
@@ -250,6 +256,22 @@ function drawWeightedRoute(map: maplibregl.Map, segments: WeightedRouteSegment[]
       "line-join": "round"
     }
   });
+}
+
+function syncSidewalkLayerStyle(map: maplibregl.Map) {
+  if (!map.getLayer(sidewalkLayerId)) return;
+
+  const zoom = map.getZoom();
+  const width = zoom >= 14 ? 2.5 : zoom >= 12 ? 1.5 : zoom >= 10 ? 0.8 : 0;
+  const opacity = zoom >= 14 ? 0.7 : zoom >= 12 ? 0.45 : zoom >= 10 ? 0.25 : 0;
+
+  map.setPaintProperty(sidewalkLayerId, "line-width", width);
+  map.setPaintProperty(sidewalkLayerId, "line-opacity", opacity);
+}
+
+function ensureSidewalkBelowRoute(map: maplibregl.Map) {
+  if (!map.getLayer(sidewalkLayerId) || !map.getLayer(routeLayerId)) return;
+  map.moveLayer(sidewalkLayerId, routeLayerId);
 }
 
 function directionLayers(routeChoice: RouteChoice) {
@@ -281,6 +303,15 @@ function directionLayers(routeChoice: RouteChoice) {
   }) as LayerSpecification[];
 }
 
+async function fetchSidewalks() {
+  const response = await fetch("/api/sidewalks/");
+  if (!response.ok) return null;
+
+  const data = (await response.json()) as GeoJSON.FeatureCollection;
+  const hasLineFeatures = data.features?.some((feature) => feature.geometry?.type === "LineString");
+  return hasLineFeatures ? data : null;
+}
+
 export default function RealMap({
   destination,
   startCoords,
@@ -288,6 +319,8 @@ export default function RealMap({
   routeRequest,
   selectedRoute,
   theme,
+  sidewalkVisible,
+  onSidewalkLayerAvailable,
   onRouteStatus
 }: RealMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -332,6 +365,53 @@ export default function RealMap({
     }
   };
 
+  const setupSidewalkLayer = async (map: maplibregl.Map) => {
+    try {
+      if (map.getLayer(sidewalkLayerId)) {
+        map.setLayoutProperty(sidewalkLayerId, "visibility", sidewalkVisible ? "visible" : "none");
+        syncSidewalkLayerStyle(map);
+        ensureSidewalkBelowRoute(map);
+        onSidewalkLayerAvailable(true);
+        return;
+      }
+
+      const data = await fetchSidewalks();
+      if (!data) {
+        onSidewalkLayerAvailable(false);
+        return;
+      }
+
+      if (!map.getSource(sidewalkSourceId)) {
+        map.addSource(sidewalkSourceId, {
+          type: "geojson",
+          data
+        });
+      }
+
+      map.addLayer({
+        id: sidewalkLayerId,
+        type: "line",
+        source: sidewalkSourceId,
+        layout: {
+          "line-join": "round",
+          "line-cap": "butt",
+          visibility: sidewalkVisible ? "visible" : "none"
+        },
+        paint: {
+          "line-color": "#2f8f2f",
+          "line-dasharray": [10, 5],
+          "line-width": 2.5,
+          "line-opacity": 0.7
+        }
+      });
+      syncSidewalkLayerStyle(map);
+      ensureSidewalkBelowRoute(map);
+      onSidewalkLayerAvailable(true);
+    } catch {
+      onSidewalkLayerAvailable(false);
+    }
+  };
+
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
@@ -357,7 +437,12 @@ export default function RealMap({
       mapRef.current = map;
 
       map.on("load", () => {
+        void setupSidewalkLayer(map);
         setupDirections(map);
+      });
+
+      map.on("zoomend", () => {
+        syncSidewalkLayerStyle(map);
       });
     }
 
@@ -386,6 +471,7 @@ export default function RealMap({
       currentMap.setStyle(style);
       currentMap.once("idle", () => {
         if (cancelled) return;
+        void setupSidewalkLayer(currentMap);
         setupDirections(currentMap);
       });
     }
@@ -399,10 +485,17 @@ export default function RealMap({
 
   useEffect(() => {
     const map = mapRef.current;
+    if (!map?.getLayer(sidewalkLayerId)) return;
+
+    map.setLayoutProperty(sidewalkLayerId, "visibility", sidewalkVisible ? "visible" : "none");
+  }, [sidewalkVisible]);
+
+  useEffect(() => {
+    const map = mapRef.current;
     if (!map?.isStyleLoaded()) return;
 
-    if (map.getLayer("safewalk-gradient-route-line")) {
-      map.setPaintProperty("safewalk-gradient-route-line", "line-color", routeColorScale(theme));
+    if (map.getLayer(routeLayerId)) {
+      map.setPaintProperty(routeLayerId, "line-color", routeColorScale(theme));
     }
   }, [selectedRoute, theme]);
 
@@ -422,7 +515,10 @@ export default function RealMap({
       .then(async () => {
         const routeCoordinates = await fetchOsrmRoute(startPoint, destinationPoint);
         const weightedSegments = buildWeightedSegments(routeCoordinates, selectedRoute);
-        if (mapRef.current) drawWeightedRoute(mapRef.current, weightedSegments, theme);
+        if (mapRef.current) {
+          drawWeightedRoute(mapRef.current, weightedSegments, theme);
+          ensureSidewalkBelowRoute(mapRef.current);
+        }
         const bounds = new maplibregl.LngLatBounds();
         bounds.extend(startPoint);
         bounds.extend(destinationPoint);
