@@ -14,5 +14,6 @@ venv/
 .claude/
 
 # Data artifacts
-backend/data/*.parquet
+backend/data/
 !backend/data/.gitkeep
+
