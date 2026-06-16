@@ -1126,3 +1126,66 @@ button:disabled {
   }
 
 }
+
+/* Pulsing marker for the location a user is about to report (keeps the pin's rotate). */
+@keyframes safewalk-pin-pulse {
+  0% {
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4), 0 0 0 0 rgba(29, 158, 117, 0.55);
+  }
+  70% {
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4), 0 0 0 11px rgba(29, 158, 117, 0);
+  }
+  100% {
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4), 0 0 0 0 rgba(29, 158, 117, 0);
+  }
+}
+
+/* Report-gap photo pipeline panel */
+.report-panel .report-step {
+  font-size: 13px;
+  color: #555;
+  margin: 0 0 8px;
+}
+
+.report-panel .report-step b {
+  color: #1d9e75;
+}
+
+.report-panel .report-photo-input {
+  display: block;
+  width: 100%;
+  font-size: 12px;
+  margin: 6px 0;
+}
+
+.report-panel .report-note-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid #d6d6cf;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.report-panel .report-status {
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+
+.report-panel .report-status.ok {
+  color: #1d9e75;
+}
+
+.report-panel .report-status.bad {
+  color: #c0392b;
+}
+
+.report-panel .report-thumb {
+  width: 100%;
+  border-radius: 8px;
+  margin: 6px 0;
+  max-height: 130px;
+  object-fit: cover;
+}

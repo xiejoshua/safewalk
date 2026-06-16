@@ -29,15 +29,29 @@ export type ScoreResponse = {
   alternatives: ScoredRoute[];
 };
 
-export type GapReportRequest = {
+export type VerifyGapRequest = {
+  photo: File;
   coordinates: LngLat;
-  type: string;
   note?: string;
 };
 
-export type GapReportResponse = {
+export type VerifiedGapReport = {
   id: string;
-  status: "mocked" | "submitted";
+  type: string;
+  note: string | null;
+  photo_url: string | null;
+  lng: number;
+  lat: number;
+  status: string | null;
+  reported_at: string | null;
+};
+
+export type VerifyGapResponse = {
+  verified: boolean;
+  confidence?: number;
+  report?: VerifiedGapReport;
+  reason?: string;
+  ai_type?: string;
 };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_SAFEWALK_API_URL;
@@ -93,11 +107,38 @@ export async function scoreRoute(request: ScoreRequest): Promise<ScoreResponse> 
   return response.json() as Promise<ScoreResponse>;
 }
 
-export async function submitGapReport(report: GapReportRequest): Promise<GapReportResponse> {
-  void report;
+// Upload a gap photo to the backend, which runs Claude vision verification. If the
+// AI confirms a real hazard, the backend inserts it into Supabase and the new pin
+// arrives on every open map via the realtime subscription.
+export async function verifyGapReport(request: VerifyGapRequest): Promise<VerifyGapResponse> {
+  if (!API_BASE_URL) {
+    throw new Error(
+      "Backend not configured. Set NEXT_PUBLIC_SAFEWALK_API_URL to enable gap reporting."
+    );
+  }
 
-  return {
-    id: "ATL-2026-0417",
-    status: "mocked"
-  };
+  const [lng, lat] = request.coordinates;
+  const form = new FormData();
+  form.append("photo", request.photo);
+  form.append("lng", String(lng));
+  form.append("lat", String(lat));
+  if (request.note) form.append("note", request.note);
+
+  const response = await fetch(`${API_BASE_URL}/verify-gap`, {
+    method: "POST",
+    body: form
+  });
+
+  if (!response.ok) {
+    let detail = "Failed to verify gap report";
+    try {
+      const body = (await response.json()) as { detail?: string };
+      if (body.detail) detail = body.detail;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(detail);
+  }
+
+  return response.json() as Promise<VerifyGapResponse>;
 }

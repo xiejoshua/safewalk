@@ -74,6 +74,25 @@ class RouteResponse(BaseModel):
     fast_route: FastRouteResult
 
 
+class GapReport(BaseModel):
+    id: str
+    type: str
+    note: str | None = None
+    photo_url: str | None = None
+    lng: float | None = None
+    lat: float | None = None
+    status: str | None = None
+    reported_at: str | None = None
+
+
+class VerifyGapResponse(BaseModel):
+    verified: bool
+    confidence: float | None = None
+    report: GapReport | None = None
+    reason: str | None = None
+    ai_type: str | None = None
+
+
 class SegmentDetailResponse(BaseModel):
     segment_id: str
     sidewalk_cov: float

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from app.directions import fetch_walking_routes, route_to_geojson
+from app.gap_reports import GapReportError, verify_and_record_gap
 from app.models import (
     FastRouteResult,
     HealthResponse,
@@ -17,6 +19,7 @@ from app.models import (
     ScoreRequest,
     ScoreResponse,
     SegmentDetailResponse,
+    VerifyGapResponse,
 )
 from app.network import GraphRouter, serialize_segment
 from app.scoring import PROFILES, build_explanation, resolve_weights, score_route
@@ -140,6 +143,34 @@ def get_route(
             distance_m=round(fast_distance, 2),
         ),
     )
+
+
+@router.post("/verify-gap", response_model=VerifyGapResponse)
+async def verify_gap(
+    photo: UploadFile = File(...),
+    lng: float = Form(..., ge=-180, le=180),
+    lat: float = Form(..., ge=-90, le=90),
+    note: str = Form(""),
+) -> VerifyGapResponse:
+    """Verify a crowdsourced gap photo with Claude vision; if real, store it as a pin.
+
+    Verified reports are inserted into Supabase gap_reports, which the frontend map
+    subscribes to over realtime — so a confirmed pin appears live on every client.
+    """
+    image_bytes = await photo.read()
+    media_type = photo.content_type or "image/jpeg"
+
+    try:
+        result = await run_in_threadpool(
+            verify_and_record_gap, image_bytes, media_type, lng, lat, note
+        )
+    except GapReportError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — surface upstream failures as 502
+        logger.exception("verify-gap failed")
+        raise HTTPException(status_code=502, detail=f"Gap verification error: {exc}") from exc
+
+    return VerifyGapResponse(**result)
 
 
 @router.get("/segment/{segment_id}", response_model=SegmentDetailResponse)

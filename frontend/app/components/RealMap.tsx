@@ -7,7 +7,8 @@ import maplibregl, {
   type LayerSpecification,
   type StyleSpecification
 } from "maplibre-gl";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { gapTypeMeta, type GapReport } from "../lib/gapReports";
 
 const styleUrl = "https://tiles.openfreemap.org/styles/liberty";
 const initialCenter: [number, number] = [-84.4194, 33.689];
@@ -23,6 +24,10 @@ type RealMapProps = {
   selectedRoute: RouteChoice;
   theme: ThemeMode;
   onRouteStatus: (status: RouteStatus) => void;
+  gapReports: GapReport[];
+  pickingLocation: boolean;
+  pendingPin: [number, number] | null;
+  onPickLocation: (coords: [number, number]) => void;
 };
 
 type SegmentWeights = {
@@ -281,6 +286,46 @@ function directionLayers(routeChoice: RouteChoice) {
   }) as LayerSpecification[];
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function createGapPinElement(color: string, pending = false) {
+  const el = document.createElement("div");
+  el.style.width = pending ? "20px" : "16px";
+  el.style.height = pending ? "20px" : "16px";
+  el.style.borderRadius = "50% 50% 50% 0";
+  el.style.transform = "rotate(-45deg)";
+  el.style.background = pending ? "#1D9E75" : color;
+  el.style.border = "2px solid #fff";
+  el.style.boxShadow = "0 1px 4px rgba(0,0,0,0.4)";
+  el.style.cursor = "pointer";
+  if (pending) {
+    el.style.animation = "safewalk-pin-pulse 1.2s ease-in-out infinite";
+  }
+  return el;
+}
+
+function gapPopupHtml(report: GapReport) {
+  const meta = gapTypeMeta(report.type);
+  const note = report.note ? `<p style="margin:4px 0 0;font-size:12px;color:#444;">${escapeHtml(report.note)}</p>` : "";
+  const photo = report.photo_url
+    ? `<img src="${escapeHtml(report.photo_url)}" alt="${escapeHtml(meta.label)}" style="width:100%;border-radius:8px;margin-top:6px;display:block;" />`
+    : "";
+  const when = report.reported_at
+    ? `<small style="color:#888;">${new Date(report.reported_at).toLocaleString()}</small>`
+    : "";
+  return `<div style="max-width:220px;font-family:inherit;">
+      <strong style="color:${meta.color};font-size:13px;">${escapeHtml(meta.label)}</strong>
+      ${note}${photo}
+      <div style="margin-top:6px;">${when}</div>
+    </div>`;
+}
+
 export default function RealMap({
   destination,
   startCoords,
@@ -288,13 +333,26 @@ export default function RealMap({
   routeRequest,
   selectedRoute,
   theme,
-  onRouteStatus
+  onRouteStatus,
+  gapReports,
+  pickingLocation,
+  pendingPin,
+  onPickLocation
 }: RealMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const directionsRef = useRef<MapLibreGlDirections | null>(null);
   const loadingControlRef = useRef<LoadingIndicatorControl | null>(null);
+  const gapMarkersRef = useRef<maplibregl.Marker[]>([]);
+  const pendingMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const pickingRef = useRef(pickingLocation);
+  const onPickRef = useRef(onPickLocation);
+  const [mapReady, setMapReady] = useState(false);
   void destination;
+
+  // Keep the click handler reading the latest picking state / callback.
+  pickingRef.current = pickingLocation;
+  onPickRef.current = onPickLocation;
 
   const destroyDirections = () => {
     if (!directionsRef.current) return;
@@ -358,6 +416,14 @@ export default function RealMap({
 
       map.on("load", () => {
         setupDirections(map);
+        setMapReady(true);
+      });
+
+      // Drop-a-pin: when the report flow is picking a location, a map click
+      // chooses where the new gap is.
+      map.on("click", (event) => {
+        if (!pickingRef.current) return;
+        onPickRef.current?.([event.lngLat.lng, event.lngLat.lat]);
       });
     }
 
@@ -431,6 +497,54 @@ export default function RealMap({
       })
       .catch(() => onRouteStatus("error"));
   }, [destinationCoords, onRouteStatus, routeRequest, selectedRoute, startCoords, theme]);
+
+  // Crosshair cursor while the user is choosing a location for a new report.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.getCanvas().style.cursor = pickingLocation ? "crosshair" : "";
+  }, [pickingLocation, mapReady]);
+
+  // Render a pin for every existing/live gap report. Markers are DOM overlays, so
+  // they survive theme restyles and update in place when the report list changes.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    gapMarkersRef.current.forEach((marker) => marker.remove());
+    gapMarkersRef.current = gapReports.map((report) => {
+      const meta = gapTypeMeta(report.type);
+      const popup = new maplibregl.Popup({ offset: 18, closeButton: true }).setHTML(
+        gapPopupHtml(report)
+      );
+      return new maplibregl.Marker({ element: createGapPinElement(meta.color) })
+        .setLngLat([report.lng, report.lat])
+        .setPopup(popup)
+        .addTo(map);
+    });
+
+    return () => {
+      gapMarkersRef.current.forEach((marker) => marker.remove());
+      gapMarkersRef.current = [];
+    };
+  }, [gapReports, mapReady]);
+
+  // Show a pulsing marker at the location the user picked for the report they're filing.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    pendingMarkerRef.current?.remove();
+    pendingMarkerRef.current = null;
+
+    if (pendingPin) {
+      pendingMarkerRef.current = new maplibregl.Marker({
+        element: createGapPinElement("#1D9E75", true)
+      })
+        .setLngLat(pendingPin)
+        .addTo(map);
+    }
+  }, [pendingPin, mapReady]);
 
   return <div ref={containerRef} className="real-map" />;
 }
