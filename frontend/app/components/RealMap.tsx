@@ -8,14 +8,14 @@ import maplibregl, {
   type StyleSpecification
 } from "maplibre-gl";
 import { useEffect, useRef, useState } from "react";
-import { gapTypeMeta, type GapReport } from "../lib/gapReports";
+import { gapTypeMeta, statusMeta, type GapReport } from "../lib/gapReports";
 
 const styleUrl = "https://tiles.openfreemap.org/styles/liberty";
 const initialCenter: [number, number] = [-84.4194, 33.689];
 const sidewalkSourceId = "sidewalks";
 const sidewalkLayerId = "sidewalk-layer";
 const routeLayerId = "safewalk-gradient-route-line";
-export type RouteStatus = "idle" | "loading" | "error" | "done";
+export type RouteStatus = "idle" | "loading" | "error" | "noroute" | "done";
 export type RouteChoice = "safe" | "default";
 export type ThemeMode = "light" | "dark";
 
@@ -29,23 +29,11 @@ type RealMapProps = {
   sidewalkVisible: boolean;
   onSidewalkLayerAvailable: (available: boolean) => void;
   onRouteStatus: (status: RouteStatus) => void;
+  routeFeatures: GeoJSON.FeatureCollection | null;
   gapReports: GapReport[];
   pickingLocation: boolean;
   pendingPin: [number, number] | null;
   onPickLocation: (coords: [number, number]) => void;
-};
-
-type SegmentWeights = {
-  hazards: number;
-  missingSidewalk: number;
-  lowAccessibility: number;
-  traffic: number;
-};
-
-type WeightedRouteSegment = {
-  coordinates: [number, number][];
-  weights: SegmentWeights;
-  score: number;
 };
 
 const hiddenLayers = [
@@ -155,96 +143,23 @@ async function loadRoadOnlyStyle(theme: ThemeMode) {
   return style as unknown as StyleSpecification;
 }
 
-function safetyScore(weights: SegmentWeights) {
-  const risk =
-    weights.hazards * 0.34 +
-    weights.missingSidewalk * 0.28 +
-    weights.lowAccessibility * 0.18 +
-    weights.traffic * 0.2;
-
-  return Math.max(0, Math.min(100, Math.round(100 - risk * 100)));
-}
-
-function demoWeightsForSegment(index: number, total: number, routeChoice: RouteChoice): SegmentWeights {
-  const progress = total <= 1 ? 0 : index / (total - 1);
-
-  if (routeChoice === "default") {
-    return {
-      hazards: Math.min(1, 0.25 + progress * 0.65),
-      missingSidewalk: Math.min(1, 0.35 + progress * 0.55),
-      lowAccessibility: 0.3 + progress * 0.35,
-      traffic: Math.min(1, 0.45 + progress * 0.45)
-    };
-  }
-
-  return {
-    hazards: progress > 0.62 ? 0.55 : 0.12 + progress * 0.18,
-    missingSidewalk: progress > 0.62 ? 0.5 : 0.08 + progress * 0.12,
-    lowAccessibility: 0.12 + progress * 0.2,
-    traffic: 0.18 + progress * 0.32
-  };
-}
-
-function buildWeightedSegments(
-  coordinates: [number, number][],
-  routeChoice: RouteChoice,
-  backendWeights?: SegmentWeights[]
+// Draw the backend's safety-scored route as a gradient line. The FeatureCollection
+// comes straight from GET /route (each segment carries a `score` 0=unsafe..100=safe).
+function drawRouteFeatures(
+  map: maplibregl.Map,
+  features: GeoJSON.FeatureCollection,
+  theme: ThemeMode
 ) {
-  return coordinates.slice(0, -1).map((coordinate, index) => {
-    const weights = backendWeights?.[index] ?? demoWeightsForSegment(index, coordinates.length - 1, routeChoice);
-    return {
-      coordinates: [coordinate, coordinates[index + 1]],
-      weights,
-      score: safetyScore(weights)
-    };
-  });
-}
-
-async function fetchOsrmRoute(startPoint: [number, number], destinationPoint: [number, number]) {
-  const coords = `${startPoint.join(",")};${destinationPoint.join(",")}`;
-  const response = await fetch(
-    `https://router.project-osrm.org/route/v1/foot/${coords}?overview=full&geometries=geojson`
-  );
-  if (!response.ok) throw new Error("Failed to fetch route geometry");
-  const data = await response.json();
-  const coordinates = data.routes?.[0]?.geometry?.coordinates as [number, number][] | undefined;
-  if (!coordinates?.length) throw new Error("Missing route geometry");
-
-  return coordinates;
-}
-
-function createWeightedRouteData(segments: WeightedRouteSegment[]) {
-  return {
-    type: "FeatureCollection" as const,
-    features: segments.map((segment) => ({
-      type: "Feature" as const,
-      properties: {
-        score: segment.score,
-        hazards: segment.weights.hazards,
-        missingSidewalk: segment.weights.missingSidewalk,
-        lowAccessibility: segment.weights.lowAccessibility,
-        traffic: segment.weights.traffic
-      },
-      geometry: {
-        type: "LineString" as const,
-        coordinates: segment.coordinates
-      }
-    }))
-  };
-}
-
-function drawWeightedRoute(map: maplibregl.Map, segments: WeightedRouteSegment[], theme: ThemeMode) {
-  const route = createWeightedRouteData(segments);
   const source = map.getSource("safewalk-gradient-route") as maplibregl.GeoJSONSource | undefined;
 
   if (source) {
-    source.setData(route);
+    source.setData(features);
     return;
   }
 
   map.addSource("safewalk-gradient-route", {
     type: "geojson",
-    data: route
+    data: features
   });
 
   map.addLayer({
@@ -333,16 +248,19 @@ function createGapPinElement(color: string, pending = false) {
 }
 
 function gapPopupHtml(report: GapReport) {
-  const meta = gapTypeMeta(report.type);
+  const type = gapTypeMeta(report.type);
+  const status = statusMeta(report.status);
   const note = report.note ? `<p style="margin:4px 0 0;font-size:12px;color:#444;">${escapeHtml(report.note)}</p>` : "";
   const photo = report.photo_url
-    ? `<img src="${escapeHtml(report.photo_url)}" alt="${escapeHtml(meta.label)}" style="width:100%;border-radius:8px;margin-top:6px;display:block;" />`
+    ? `<img src="${escapeHtml(report.photo_url)}" alt="${escapeHtml(type.label)}" style="width:100%;border-radius:8px;margin-top:6px;display:block;" />`
     : "";
   const when = report.reported_at
     ? `<small style="color:#888;">${new Date(report.reported_at).toLocaleString()}</small>`
     : "";
+  const badge = `<span style="display:inline-block;margin-top:4px;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;color:#fff;background:${status.color};">${escapeHtml(status.label)}</span>`;
   return `<div style="max-width:220px;font-family:inherit;">
-      <strong style="color:${meta.color};font-size:13px;">${escapeHtml(meta.label)}</strong>
+      <strong style="font-size:13px;">${escapeHtml(type.label)}</strong><br/>
+      ${badge}
       ${note}${photo}
       <div style="margin-top:6px;">${when}</div>
     </div>`;
@@ -367,6 +285,7 @@ export default function RealMap({
   sidewalkVisible,
   onSidewalkLayerAvailable,
   onRouteStatus,
+  routeFeatures,
   gapReports,
   pickingLocation,
   pendingPin,
@@ -565,34 +484,24 @@ export default function RealMap({
     }
   }, [selectedRoute, theme]);
 
+  // Draw the safety-scored route from the backend (page owns fetch + status).
+  // routeFeatures changes whenever a new route comes back; we render its geometry
+  // and place the start/end waypoint markers.
   useEffect(() => {
-    if (!routeRequest || !directionsRef.current || !mapRef.current) return;
-    if (!startCoords || !destinationCoords) {
-      onRouteStatus("error");
-      return;
-    }
+    const map = mapRef.current;
+    if (!map || !routeFeatures || !startCoords || !destinationCoords) return;
 
-    const startPoint = startCoords;
-    const destinationPoint = destinationCoords;
-    onRouteStatus("loading");
+    // Place start/end markers (MapLibreGlDirections computes its own line invisibly).
+    directionsRef.current?.setWaypoints([startCoords, destinationCoords]).catch(() => {});
 
-    directionsRef.current
-      .setWaypoints([startPoint, destinationPoint])
-      .then(async () => {
-        const routeCoordinates = await fetchOsrmRoute(startPoint, destinationPoint);
-        const weightedSegments = buildWeightedSegments(routeCoordinates, selectedRoute);
-        if (mapRef.current) {
-          drawWeightedRoute(mapRef.current, weightedSegments, theme);
-          ensureSidewalkBelowRoute(mapRef.current);
-        }
-        const bounds = new maplibregl.LngLatBounds();
-        bounds.extend(startPoint);
-        bounds.extend(destinationPoint);
-        mapRef.current?.fitBounds(bounds, { padding: 90, duration: 850 });
-        onRouteStatus("done");
-      })
-      .catch(() => onRouteStatus("error"));
-  }, [destinationCoords, onRouteStatus, routeRequest, selectedRoute, startCoords, theme]);
+    drawRouteFeatures(map, routeFeatures, theme);
+    ensureSidewalkBelowRoute(map);
+
+    const bounds = new maplibregl.LngLatBounds();
+    bounds.extend(startCoords);
+    bounds.extend(destinationCoords);
+    map.fitBounds(bounds, { padding: 90, duration: 850 });
+  }, [routeFeatures, startCoords, destinationCoords, theme]);
 
   // Crosshair cursor while the user is choosing a location for a new report.
   useEffect(() => {
@@ -609,11 +518,11 @@ export default function RealMap({
 
     gapMarkersRef.current.forEach((marker) => marker.remove());
     gapMarkersRef.current = gapReports.map((report) => {
-      const meta = gapTypeMeta(report.type);
+      const color = statusMeta(report.status).color;
       const popup = new maplibregl.Popup({ offset: 18, closeButton: true }).setHTML(
         gapPopupHtml(report)
       );
-      return new maplibregl.Marker({ element: createGapPinElement(meta.color) })
+      return new maplibregl.Marker({ element: createGapPinElement(color) })
         .setLngLat([report.lng, report.lat])
         .setPopup(popup)
         .addTo(map);

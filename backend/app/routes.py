@@ -267,7 +267,7 @@ def get_route(
             explanation=explanation,
         ),
         fast_route=FastRouteResult(
-            segments=_to_route_segments(fast_segments, include_risk=False),
+            segments=_to_route_segments(fast_segments, include_risk=True),
             distance_m=round(fast_distance, 2),
         ),
     )

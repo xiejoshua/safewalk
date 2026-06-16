@@ -25,6 +25,21 @@ export function gapTypeMeta(type: string) {
   return GAP_TYPE_META[type] ?? GAP_TYPE_META.other;
 }
 
+// Workflow status → label + pin color. Matches migration 0002's vocabulary.
+export type GapStatus = "reported" | "in_progress" | "processed";
+
+export const STATUS_META: Record<string, { label: string; color: string }> = {
+  reported: { label: "Reported", color: "#e23d28" },
+  in_progress: { label: "In progress", color: "#e8a33d" },
+  processed: { label: "Processed", color: "#2d9e5e" }
+};
+
+export const STATUS_ORDER: GapStatus[] = ["reported", "in_progress", "processed"];
+
+export function statusMeta(status: string | null | undefined) {
+  return STATUS_META[status ?? ""] ?? STATUS_META.reported;
+}
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_SAFEWALK_API_URL;
 
 // Fetch all existing reports (the pins already on the map for known problems).
@@ -33,7 +48,7 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_SAFEWALK_API_URL;
 export async function fetchGapReports(): Promise<GapReport[]> {
   if (API_BASE_URL) {
     try {
-      const res = await fetch(`${API_BASE_URL}/gap-reports`);
+      const res = await fetch(`${API_BASE_URL}/gap-reports`, { cache: "no-store" });
       if (res.ok) {
         const rows = (await res.json()) as GapReport[];
         return rows.filter((r) => r.lng != null && r.lat != null);
@@ -82,4 +97,25 @@ export function subscribeGapReports(onInsert: (report: GapReport) => void): () =
   return () => {
     supabase.removeChannel(channel);
   };
+}
+
+// Move a report between workflow statuses. Returns the updated row.
+export async function updateGapStatus(id: string, status: GapStatus): Promise<GapReport> {
+  if (!API_BASE_URL) throw new Error("Backend not configured (NEXT_PUBLIC_SAFEWALK_API_URL).");
+  const res = await fetch(`${API_BASE_URL}/gap-reports/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status })
+  });
+  if (!res.ok) {
+    let detail = "Failed to update status";
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body.detail) detail = body.detail;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(detail);
+  }
+  return res.json() as Promise<GapReport>;
 }

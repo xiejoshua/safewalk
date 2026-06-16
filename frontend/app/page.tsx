@@ -17,7 +17,16 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MapboxAutocomplete from "./components/MapboxAutocomplete";
 import type { RouteChoice, RouteStatus } from "./components/RealMap";
-import { scoreRoute, verifyGapReport } from "./lib/backendApi";
+import {
+  computeRouteStats,
+  getOsrmRouteFeatures,
+  getSafeRoute,
+  NoRouteError,
+  osrmRouteStats,
+  segmentsToFeatures,
+  verifyGapReport,
+  type RouteStats
+} from "./lib/backendApi";
 import { fetchGapReports, gapTypeMeta, subscribeGapReports, type GapReport } from "./lib/gapReports";
 import { routeData, scoreData } from "./lib/data";
 
@@ -38,6 +47,12 @@ const SLIDER_DEFAULTS: Record<"light" | "dark", Record<PreferenceKey, number>> =
 const RealMap = dynamic(() => import("./components/RealMap"), { ssr: false });
 
 const martaStations = [
+  // Gillem corridor destinations (the scored walkable network). Coords are stored
+  // directly, so these don't depend on the geocoder. "Gillem Logistics Center"
+  // pairs with a "Fountain School, Forest Park, GA" start for a fully-scored route.
+  ["Gillem Logistics Center", [-84.33703, 33.61649]],
+  ["Fountain School (Forest Park)", [-84.37381, 33.61178]],
+  ["Starr Park (Forest Park)", [-84.36659, 33.61761]],
   ["Airport Station", [-84.446, 33.6407]],
   ["Arts Center Station", [-84.3867, 33.7893]],
   ["Ashby Station", [-84.4173, 33.7563]],
@@ -119,6 +134,13 @@ export default function Home() {
   const [selectedRoute, setSelectedRoute] = useState<RouteChoice>("safe");
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [gapReports, setGapReports] = useState<GapReport[]>([]);
+  // Both routes from the backend, keyed by the safe/default toggle.
+  const [routes, setRoutes] = useState<Record<RouteChoice, GeoJSON.FeatureCollection> | null>(null);
+  const [routeStats, setRouteStats] = useState<Record<RouteChoice, RouteStats> | null>(null);
+  const routeFeatures = useMemo(
+    () => (routes ? routes[selectedRoute] : null),
+    [routes, selectedRoute]
+  );
 
   // 3 sliders + 1 toggle. State lifted here so requestRoute can read it.
   const [preferences, setPreferences] = useState<Record<PreferenceKey, number>>(
@@ -168,27 +190,47 @@ export default function Home() {
       setStartCoords(origin);
       setDestinationCoords(dest);
 
-      await scoreRoute({
-        origin,
-        dest,
-        sidewalks: preferences.sidewalks * SLIDER_SCALE,
-        safety:    preferences.safety    * SLIDER_SCALE,
-        comfort:   preferences.comfort   * SLIDER_SCALE,
-        step_free: stepFree,
-        theme,
-      });
+      try {
+        // Safety-scored route from the backend graph (Gillem corridor).
+        const route = await getSafeRoute({
+          origin,
+          dest,
+          sidewalks: preferences.sidewalks * SLIDER_SCALE,
+          safety:    preferences.safety    * SLIDER_SCALE,
+          comfort:   preferences.comfort   * SLIDER_SCALE,
+          stepFree,
+          theme,
+        });
+        setRoutes({
+          safe: segmentsToFeatures(route.safe_route.segments),
+          default: segmentsToFeatures(route.fast_route.segments)
+        });
+        setRouteStats({
+          safe: computeRouteStats(route.safe_route.segments, route.safe_route.distance_m),
+          default: computeRouteStats(route.fast_route.segments, route.fast_route.distance_m)
+        });
+      } catch (routeError) {
+        // Outside the scored corridor → fall back to a plain OSRM walking route.
+        if (!(routeError instanceof NoRouteError)) throw routeError;
+        const fallback = await getOsrmRouteFeatures(origin, dest);
+        setRoutes({ safe: fallback, default: fallback });
+        const stats = osrmRouteStats(fallback);
+        setRouteStats({ safe: stats, default: stats });
+      }
       setRouteStatus("done");
-    } catch {
+      setRouteRequest((request) => request + 1);
+    } catch (error) {
+      void error;
+      setRoutes(null);
+      setRouteStats(null);
       setRouteStatus("error");
     }
-
-    setRouteRequest((request) => request + 1);
   }, [destination, destinationCoords, preferences, start, startCoords, stepFree, theme]);
 
-  const co2 = useMemo(
-    () => Math.round(routeData.safe_route.distance_mi * 1.1 * 10) / 10,
-    []
-  );
+  const co2 = useMemo(() => {
+    const miles = routeStats?.safe.miles ?? routeData.safe_route.distance_mi;
+    return Math.round(miles * 1.1 * 10) / 10;
+  }, [routeStats]);
 
   return (
     <main className={`app-shell ${theme === "dark" ? "dark-mode" : ""}`}>
@@ -268,6 +310,7 @@ export default function Home() {
                 pathKey={`${selectedRoute}-${routeRequest}`}
                 selectedRoute={selectedRoute}
                 onSelectRoute={setSelectedRoute}
+                stats={routeStats}
               />
             )}
             {tab === "score" && <ScorePanel />}
@@ -283,6 +326,7 @@ export default function Home() {
           selectedRoute={selectedRoute}
           theme={theme}
           onRouteStatus={setRouteStatus}
+          routeFeatures={routeFeatures}
           gapReports={gapReports}
           onNewReport={upsertGapReport}
         />
@@ -445,7 +489,7 @@ function MartaStationDropdown({
         type="button"
         onClick={() => setOpen((current) => !current)}
       >
-        {value || "Choose MARTA station..."}
+        {value || "Choose destination..."}
       </button>
       {open && (
         <div className="marta-dropdown-menu">
@@ -481,7 +525,8 @@ function Nav({
         Safewalk
       </div>
       <div className="nav-links">
-        <a>Map</a>
+        <a href="/">Map</a>
+        <a href="/status">Status</a>
         <a>About</a>
       </div>
       <button className={`theme-toggle ${theme === "dark" ? "is-dark" : ""}`} onClick={onToggleTheme} type="button">
@@ -513,20 +558,31 @@ function Nav({
   );
 }
 
+function sidewalkStat(s?: RouteStats) {
+  if (!s || s.noSidewalkMiles == null) return <span>Sidewalk: n/a</span>;
+  if (s.noSidewalkMiles <= 0) return <span className="ok"><Check size={15} /> Full sidewalk</span>;
+  return <span className="bad">x {s.noSidewalkMiles} mi no sidewalk</span>;
+}
+
 function RoutesPanel({
   co2,
   pathKey,
   selectedRoute,
-  onSelectRoute
+  onSelectRoute,
+  stats
 }: {
   co2: number;
   pathKey: string;
   selectedRoute: RouteChoice;
   onSelectRoute: (route: RouteChoice) => void;
+  stats: Record<RouteChoice, RouteStats> | null;
 }) {
   const [walkedPathKey, setWalkedPathKey] = useState<string | null>(null);
   const [confettiBurst, setConfettiBurst] = useState(0);
   const walkedThisPath = walkedPathKey === pathKey;
+
+  const safe = stats?.safe;
+  const def = stats?.default;
 
   useEffect(() => {
     setConfettiBurst(0);
@@ -553,9 +609,9 @@ function RoutesPanel({
             <span>Recommended</span>
           </header>
           <div className="stats-row">
-            <span><Clock3 size={15} /> Time: {routeData.safe_route.duration_min} min</span>
-            <span>Distance: {routeData.safe_route.distance_mi} mi</span>
-            <span className="ok"><Check size={15} /> Full sidewalk</span>
+            <span><Clock3 size={15} /> Time: {safe ? safe.minutes : routeData.safe_route.duration_min} min</span>
+            <span>Distance: {safe ? safe.miles : routeData.safe_route.distance_mi} mi</span>
+            {sidewalkStat(safe)}
           </div>
         </article>
         <article
@@ -566,12 +622,12 @@ function RoutesPanel({
         >
           <header>
             <strong><AlertTriangle size={18} /> Default route</strong>
-            <span>{routeData.default_route.danger_zones} danger zones</span>
+            <span>{def && def.dangerZones != null ? `${def.dangerZones} danger zones` : "Fastest"}</span>
           </header>
           <div className="stats-row">
-            <span><Clock3 size={15} /> Time: {routeData.default_route.duration_min} min</span>
-            <span>Distance: {routeData.default_route.distance_mi} mi</span>
-            <span className="bad">x {routeData.default_route.missing_sidewalk_mi} mi no sidewalk</span>
+            <span><Clock3 size={15} /> Time: {def ? def.minutes : routeData.default_route.duration_min} min</span>
+            <span>Distance: {def ? def.miles : routeData.default_route.distance_mi} mi</span>
+            {sidewalkStat(def)}
           </div>
         </article>
         <div className="community-card">
@@ -725,6 +781,7 @@ function MapPanel({
   selectedRoute,
   theme,
   onRouteStatus,
+  routeFeatures,
   gapReports,
   onNewReport
 }: {
@@ -736,6 +793,7 @@ function MapPanel({
   selectedRoute: RouteChoice;
   theme: "light" | "dark";
   onRouteStatus: (status: RouteStatus) => void;
+  routeFeatures: GeoJSON.FeatureCollection | null;
   gapReports: GapReport[];
   onNewReport: (report: GapReport) => void;
 }) {
@@ -833,6 +891,7 @@ function MapPanel({
         sidewalkVisible={sidewalkVisible}
         onSidewalkLayerAvailable={setSidewalkReady}
         onRouteStatus={onRouteStatus}
+        routeFeatures={routeFeatures}
         gapReports={gapReports}
         pickingLocation={reportOpen}
         pendingPin={pendingPin}
