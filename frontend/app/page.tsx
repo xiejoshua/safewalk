@@ -46,55 +46,6 @@ const SLIDER_DEFAULTS: Record<"light" | "dark", Record<PreferenceKey, number>> =
 
 const RealMap = dynamic(() => import("./components/RealMap"), { ssr: false });
 
-const martaStations = [
-  // Gillem corridor destinations (the scored walkable network). Coords are stored
-  // directly, so these don't depend on the geocoder. "Gillem Logistics Center"
-  // pairs with a "Fountain School, Forest Park, GA" start for a fully-scored route.
-  ["Gillem Logistics Center", [-84.33703, 33.61649]],
-  ["Fountain School (Forest Park)", [-84.37381, 33.61178]],
-  ["Starr Park (Forest Park)", [-84.36659, 33.61761]],
-  ["Airport Station", [-84.446, 33.6407]],
-  ["Arts Center Station", [-84.3867, 33.7893]],
-  ["Ashby Station", [-84.4173, 33.7563]],
-  ["Avondale Station", [-84.2807, 33.7753]],
-  ["Bankhead Station", [-84.4289, 33.7716]],
-  ["Brookhaven/Oglethorpe Station", [-84.3396, 33.8597]],
-  ["Buckhead Station", [-84.3671, 33.8482]],
-  ["Chamblee Station", [-84.3053, 33.8874]],
-  ["Civic Center Station", [-84.3873, 33.7663]],
-  ["College Park Station", [-84.4487, 33.6516]],
-  ["Decatur Station", [-84.2966, 33.7748]],
-  ["Doraville Station", [-84.2801, 33.9029]],
-  ["Dunwoody Station", [-84.3447, 33.9213]],
-  ["East Lake Station", [-84.3065, 33.7651]],
-  ["East Point Station", [-84.4418, 33.6767]],
-  ["Edgewood/Candler Park Station", [-84.34, 33.7619]],
-  ["Five Points Station", [-84.3915, 33.7539]],
-  ["Garnett Station", [-84.3961, 33.7489]],
-  ["Georgia State Station", [-84.3857, 33.7499]],
-  ["GWCC/CNN Center Station", [-84.3977, 33.7574]],
-  ["Hamilton E. Holmes Station", [-84.4698, 33.7546]],
-  ["Indian Creek Station", [-84.2292, 33.7699]],
-  ["Inman Park/Reynoldstown Station", [-84.3527, 33.7574]],
-  ["Kensington Station", [-84.2514, 33.7725]],
-  ["King Memorial Station", [-84.3758, 33.7493]],
-  ["Lakewood/Fort McPherson Station", [-84.4289, 33.7005]],
-  ["Lenox Station", [-84.3579, 33.8464]],
-  ["Lindbergh Center Station", [-84.3673, 33.8236]],
-  ["Medical Center Station", [-84.3514, 33.9105]],
-  ["Midtown Station", [-84.3867, 33.7806]],
-  ["North Avenue Station", [-84.3875, 33.7717]],
-  ["North Springs Station", [-84.3579, 33.9457]],
-  ["Oakland City Station", [-84.4255, 33.7173]],
-  ["Peachtree Center Station", [-84.3872, 33.7597]],
-  ["Sandy Springs Station", [-84.3515, 33.9321]],
-  ["Vine City Station", [-84.4038, 33.7566]],
-  ["West End Station", [-84.4172, 33.7358]],
-  ["West Lake Station", [-84.4461, 33.7532]]
-]
-  .map(([name, coords]) => ({ name: name as string, coords: coords as [number, number] }))
-  .sort((a, b) => a.name.localeCompare(b.name));
-
 async function geocodeDestination(query: string): Promise<[number, number] | null> {
   const trimmed = query.trim();
   if (!trimmed) return null;
@@ -256,12 +207,17 @@ export default function Home() {
               </label>
               <label className="field muted">
                 <Flag size={20} />
-                <MartaStationDropdown
+                <MapboxAutocomplete
                   value={destination}
+                  onChange={(value) => {
+                    setDestination(value);
+                    setDestinationCoords(null);
+                  }}
                   onSelect={(coords, placeName) => {
                     setDestinationCoords(coords);
                     setDestination(placeName);
                   }}
+                  placeholder="Destination..."
                 />
               </label>
               <button className="primary-btn" onClick={requestRoute} disabled={routeStatus === "loading"}>
@@ -459,54 +415,6 @@ function SnapSlider({
           );
         })}
       </div>
-    </div>
-  );
-}
-
-function MartaStationDropdown({
-  value,
-  onSelect
-}: {
-  value: string;
-  onSelect: (coords: [number, number], placeName: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function closeOnOutsideClick(event: MouseEvent) {
-      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
-    }
-
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
-  }, []);
-
-  return (
-    <div className="marta-dropdown" ref={containerRef}>
-      <button
-        className={`marta-dropdown-trigger ${value ? "" : "placeholder"}`}
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-      >
-        {value || "Choose destination..."}
-      </button>
-      {open && (
-        <div className="marta-dropdown-menu">
-          {martaStations.map((station) => (
-            <button
-              key={station.name}
-              type="button"
-              onClick={() => {
-                onSelect(station.coords, station.name);
-                setOpen(false);
-              }}
-            >
-              {station.name}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

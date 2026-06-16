@@ -18,6 +18,9 @@ type MapboxAutocompleteProps = {
 const georgiaBbox = "-85.6052,30.3579,-80.8397,35.0007";
 
 const georgiaPlaces: Suggestion[] = [
+  { id: "ga-gillem-logistics", place_name: "Gillem Logistics Center, Forest Park, GA", center: [-84.33703, 33.61649] },
+  { id: "ga-fountain-school", place_name: "Fountain School, Forest Park, GA", center: [-84.37381, 33.61178] },
+  { id: "ga-starr-park", place_name: "Starr Park, Forest Park, GA", center: [-84.36659, 33.61761] },
   { id: "ga-georgia-tech", place_name: "Georgia Tech, Atlanta, GA", center: [-84.3963, 33.7756] },
   { id: "ga-piedmont-park", place_name: "Piedmont Park, Atlanta, GA", center: [-84.3733, 33.7851] },
   { id: "ga-beltline", place_name: "Atlanta BeltLine Eastside Trail, Atlanta, GA", center: [-84.3648, 33.7668] },
@@ -27,7 +30,7 @@ const georgiaPlaces: Suggestion[] = [
 
 function localGeorgiaSuggestions(query: string) {
   const normalized = query.trim().toLowerCase();
-  if (!normalized) return georgiaPlaces;
+  if (!normalized) return [];
 
   return georgiaPlaces.filter((place) => place.place_name.toLowerCase().includes(normalized));
 }
@@ -57,8 +60,15 @@ export default function MapboxAutocomplete({
     const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
     const query = value.trim();
 
+    if (query.length === 0) {
+      setSuggestions([]);
+      setOpen(false);
+      return;
+    }
+
     if (query.length < 2) {
       setSuggestions(localGeorgiaSuggestions(query));
+      setOpen(true);
       return;
     }
 
@@ -126,8 +136,7 @@ export default function MapboxAutocomplete({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onFocus={() => {
-          if (!value.trim()) setSuggestions(georgiaPlaces);
-          setOpen(true);
+          if (value.trim()) setOpen(true);
         }}
         placeholder={placeholder}
         className="h-11 w-full rounded-lg border border-[#ddd8cf] bg-white px-4 text-[22px] text-[#1a1a1a] outline-none placeholder:text-[#aaa69d]"
