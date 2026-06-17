@@ -1050,10 +1050,22 @@ button:disabled {
 
 .dark-mode .field {
   background: #171d1a;
+  border-color: #2e3a34;
+  color: var(--forest);
 }
 
 .dark-mode .field input {
   border-color: #35403a;
+  background: #111714;
+  color: var(--text);
+}
+
+.dark-mode .field input::placeholder {
+  color: #9da49b;
+}
+
+.dark-mode .search-box {
+  background: #101614;
 }
 
 .dark-mode .nav-links,
@@ -1121,6 +1133,35 @@ button:disabled {
 .dark-mode .report-grid button.picked {
   background: var(--sage);
   color: var(--deep);
+}
+
+.dark-mode .community-card {
+  border-color: #2e3a34;
+  background: #121815;
+  color: var(--text);
+}
+
+.dark-mode .community-title,
+.dark-mode .community-scale span:nth-child(2),
+.dark-mode .community-stats strong {
+  color: #8fd45d;
+}
+
+.dark-mode .community-progress {
+  background: #30362f;
+}
+
+.dark-mode .community-progress i {
+  background: #74c947;
+}
+
+.dark-mode .community-scale,
+.dark-mode .community-stats span {
+  color: #d6ddd3;
+}
+
+.dark-mode .community-stats div + div {
+  border-left-color: #334038;
 }
 
 @media (max-width: 900px) {
