@@ -232,6 +232,63 @@ button:disabled {
   min-height: auto;
 }
 
+.step-free-row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: fit-content;
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #666;
+  font-size: 13px;
+}
+
+.step-free-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.step-free-switch {
+  position: relative;
+  display: inline-flex;
+  width: 38px;
+  height: 22px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #b7b7b7;
+  transition: background 160ms ease;
+}
+
+.step-free-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16);
+  transition: transform 160ms ease;
+}
+
+.step-free-input:checked + .step-free-switch {
+  background: #1d9e75;
+}
+
+.step-free-input:checked + .step-free-switch::after {
+  transform: translateX(16px);
+}
+
+.step-free-input:focus-visible + .step-free-switch {
+  outline: 2px solid rgba(29, 158, 117, 0.35);
+  outline-offset: 2px;
+}
+
 .search-box {
   position: relative;
   z-index: 6;
