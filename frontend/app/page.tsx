@@ -330,9 +330,13 @@ export default function Home() {
     if (!hasRequestedRouteRef.current) return;
     if (!startCoords || !destinationCoords) return;
 
+    // 750 ms (not 250) — the backend /route currently takes ~5 s per call
+    // on Render free tier, so a tighter debounce just queues redundant
+    // in-flight requests while the user is still dragging. Wider window
+    // lets the user settle on a slider value before firing.
     const handle = window.setTimeout(() => {
       void requestRoute();
-    }, 250);
+    }, 750);
 
     return () => window.clearTimeout(handle);
   }, [routingPreferences, stepFree, theme, startCoords, destinationCoords, requestRoute]);

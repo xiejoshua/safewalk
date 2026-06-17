@@ -10,6 +10,7 @@ from typing import Any
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry import LineString, Point, mapping
+from shapely.strtree import STRtree
 
 from app.scoring import crossing_penalty, resolve_weights_from_sliders, segment_risk
 from app.segments import SEGMENT_COLUMNS, SegmentStore
@@ -118,6 +119,14 @@ class GraphRouter:
     adjacency: dict[tuple[float, float], list[GraphEdge]] = field(default_factory=dict)
     segment_lookup: dict[str, dict[str, Any]] = field(default_factory=dict)
     node_coords: dict[tuple[float, float], tuple[float, float]] = field(default_factory=dict)
+    # Spatial index over walkable graph nodes (in UTM 32616). Built once in
+    # _build_graph; snap_to_node uses nearest() instead of O(N) scan.
+    _node_tree: STRtree | None = None
+    _node_index_keys: list[tuple[float, float]] = field(default_factory=list)
+    # Cache the last (weights, step_free) we set safe_cost for. Repeat configs
+    # (e.g. same slider dots, auto-rerun after toggling stepFree back and
+    # forth) become a no-op instead of an O(E) re-scan.
+    _safe_cost_key: tuple | None = None
 
     @classmethod
     def from_segment_store(cls, store: SegmentStore) -> GraphRouter:
@@ -174,35 +183,45 @@ class GraphRouter:
                 edge.safe_cost = 1.0
                 edge.fast_cost = float(seg.get("length_m") or 1.0)
 
+        # Spatial index over graph nodes (in UTM, same CRS the snap point gets
+        # transformed into). O(log N) nearest lookups replace the per-segment
+        # linear scan that dominated /route latency on the deployed graph.
+        self._node_index_keys = list(self.node_coords.keys())
+        self._node_tree = STRtree(
+            [Point(self.node_coords[k][0], self.node_coords[k][1]) for k in self._node_index_keys]
+        )
+
     def set_safe_costs(self, weights: dict[str, float], step_free: bool = False) -> None:
+        # The slider auto-rerun fires a /route call per debounced slider tick.
+        # Memoize by the exact weight + toggle config so back-to-back requests
+        # with the same key short-circuit instead of re-running an O(E) scan.
+        key = (tuple(sorted(weights.items())), bool(step_free))
+        if key == self._safe_cost_key:
+            return
         for node_edges in self.adjacency.values():
             for edge in node_edges:
                 seg = self.segment_lookup[edge.segment_id]
                 cp = crossing_penalty(seg, step_free)
                 risk = segment_risk(seg, weights, step_free, crossing_penalty_value=cp)
                 edge.safe_cost = risk if risk != float("inf") else 1e12
+        self._safe_cost_key = key
 
     def snap_to_node(self, lon: float, lat: float) -> tuple[float, float]:
         pt_utm = gpd.GeoSeries([Point(lon, lat)], crs=4326).to_crs(32616).iloc[0]
-        best_node: tuple[float, float] | None = None
-        best_dist = SNAP_MAX_M
-
-        for seg_id, utm_geom in self.segments_utm.geometry.items():
-            dist = pt_utm.distance(utm_geom)
-            if dist >= best_dist:
-                continue
-
-            start = utm_geom.interpolate(0)
-            end = utm_geom.interpolate(utm_geom.length)
-            for endpoint in (start, end):
-                d = pt_utm.distance(endpoint)
-                if d < best_dist:
-                    best_dist = d
-                    best_node = _node_key(endpoint)
-
-        if best_node is None:
+        if self._node_tree is None or not self._node_index_keys:
             raise ValueError("Origin/destination is too far from the walkable network")
-        return best_node
+
+        # STRtree.nearest is O(log N). Returns an index into the geometries we
+        # passed at build time; map it back through _node_index_keys to the
+        # node key. Then validate the distance against SNAP_MAX_M — the tree
+        # gives us the *nearest* node, but it might still be too far away to
+        # legitimately snap.
+        idx = int(self._node_tree.nearest(pt_utm))
+        candidate_key = self._node_index_keys[idx]
+        cx, cy = self.node_coords[candidate_key]
+        if pt_utm.distance(Point(cx, cy)) > SNAP_MAX_M:
+            raise ValueError("Origin/destination is too far from the walkable network")
+        return candidate_key
 
     def dijkstra(
         self,
