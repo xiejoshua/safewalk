@@ -411,7 +411,7 @@ export default function RealMap({
     if (map.getLayer(routeLayerId)) {
       map.setPaintProperty(routeLayerId, "line-color", routeColorScale(theme));
     }
-  }, [selectedRoute, theme]);
+  }, [theme]);
 
   // Draw the safety-scored route from the backend (page owns fetch + status).
   // routeFeatures changes whenever a new route comes back; we render its geometry

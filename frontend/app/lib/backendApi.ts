@@ -37,6 +37,7 @@ export type SafeRouteRequest = {
 export type RouteApiSegment = {
   segment_id: string;
   risk: number | null;
+  display_score?: number | null;
   sidewalk_cov: number | null;
   length_m: number | null;
   geometry: GeoJSON.LineString | null;
@@ -203,7 +204,8 @@ export function computeRouteStats(segments: RouteApiSegment[], distanceM: number
   for (const seg of segments) {
     const len = seg.length_m ?? 0;
     if ((seg.sidewalk_cov ?? 1) < NO_SIDEWALK_COV) noSidewalkM += len;
-    const risky = (seg.risk ?? 0) >= DANGER_RISK;
+    const displayRisk = seg.display_score != null ? 1 - seg.display_score / 100 : seg.risk ?? 0;
+    const risky = displayRisk >= DANGER_RISK;
     if (risky && !inDanger) dangerZones += 1;
     inDanger = risky;
   }
@@ -253,7 +255,7 @@ export function segmentsToFeatures(segments: RouteApiSegment[]): GeoJSON.Feature
       )
       .map((segment) => ({
         type: "Feature",
-        properties: { score: Math.round((1 - (segment.risk ?? 0)) * 100) },
+        properties: { score: segment.display_score ?? Math.round((1 - (segment.risk ?? 0)) * 100) },
         geometry: segment.geometry
       }))
   };

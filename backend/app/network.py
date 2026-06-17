@@ -11,10 +11,12 @@ import geopandas as gpd
 import pandas as pd
 from shapely.geometry import LineString, Point, mapping
 
-from app.scoring import crossing_penalty, segment_risk
+from app.scoring import crossing_penalty, resolve_weights_from_sliders, segment_risk
 from app.segments import SEGMENT_COLUMNS, SegmentStore
 
 logger = logging.getLogger(__name__)
+
+DISPLAY_WEIGHTS = resolve_weights_from_sliders(theme="light")
 
 # Walkable OSM `highway` classes. Includes arterials (primary/secondary) because
 # pedestrians DO walk on them — that's the Marcus / Gillem story per DESIGN.md §11.
@@ -77,6 +79,12 @@ def row_to_dict(row: Any) -> dict[str, Any]:
 
 def serialize_segment(seg: dict[str, Any], risk: float | None = None) -> dict[str, Any]:
     geom = seg.get("geometry")
+    display_risk = segment_risk(
+        seg,
+        DISPLAY_WEIGHTS,
+        step_free=False,
+        crossing_penalty_value=crossing_penalty(seg, False),
+    )
     payload: dict[str, Any] = {
         "segment_id": seg.get("segment_id"),
         "sidewalk_cov": float(seg.get("sidewalk_cov") or 0.0),
@@ -88,6 +96,7 @@ def serialize_segment(seg: dict[str, Any], risk: float | None = None) -> dict[st
         "slope_risk": float(seg.get("slope_risk") or 0.0),
         "length_m": float(seg.get("length_m") or 0.0),
         "geometry": mapping(geom) if geom is not None else None,
+        "display_score": round((1.0 - display_risk) * 100),
     }
     if risk is not None:
         payload["risk"] = round(risk, 6)

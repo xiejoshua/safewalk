@@ -67,6 +67,7 @@ class RouteSegment(BaseModel):
     length_m: float
     geometry: dict | None = None
     risk: float | None = None
+    display_score: float | None = None
 
 
 class RouteSliderWeights(BaseModel):
