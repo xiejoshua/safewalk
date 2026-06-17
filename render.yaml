@@ -12,3 +12,13 @@ services:
         sync: false
       - key: MAPBOX_ACCESS_TOKEN
         sync: false
+      # Live gap-report AI verification + storage. Set the values in the Render
+      # dashboard (Environment tab) — they are secrets, not committed here.
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
