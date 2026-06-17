@@ -16,13 +16,24 @@ import {
 import Link from "next/link";
 import type { ComponentType } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { submitGapReport } from "../lib/backendApi";
+import { analyzeGapPhoto, submitVerifiedGap, type AnalyzeGapResult } from "../lib/gapReports";
 
 type IssueOption = {
   id: string;
   label: string;
   type: string;
   icon: ComponentType<{ size?: number }>;
+};
+
+type AnalyzeState = "idle" | "analyzing" | "done" | "error";
+
+// Map Gemini's gap_type back to the issue tile that should be pre-selected.
+const AI_TYPE_TO_ISSUE: Record<string, string> = {
+  no_sidewalk: "no_sidewalk",
+  streetlight_out: "poor_lighting",
+  no_crossing: "unsafe_crossing",
+  broken_sidewalk: "pothole_hazard",
+  obstruction: "construction"
 };
 
 type ReportLocation = {
@@ -87,6 +98,12 @@ export default function ReportPage() {
   const [error, setError] = useState("");
   const [ticket, setTicket] = useState("");
 
+  // AI verification of the uploaded photo (Gemini). A report can only be
+  // submitted once a photo is verified as showing a real gap/hazard.
+  const [analysis, setAnalysis] = useState<AnalyzeGapResult | null>(null);
+  const [analyzeState, setAnalyzeState] = useState<AnalyzeState>("idle");
+  const [analyzeError, setAnalyzeError] = useState("");
+
   useEffect(() => {
     if (!navigator.geolocation) {
       setLocation({
@@ -132,7 +149,7 @@ export default function ReportPage() {
 
   const selectPhoto = useCallback((file: File | null) => {
     if (file && file.size > 10 * 1024 * 1024) {
-      setError("That photo is over 10MB. Choose a smaller image or submit without one.");
+      setError("That photo is over 10MB. Choose a smaller image.");
       return;
     }
     setError("");
@@ -141,6 +158,29 @@ export default function ReportPage() {
       if (current) URL.revokeObjectURL(current);
       return file ? URL.createObjectURL(file) : null;
     });
+
+    // Reset prior verdict, then run AI verification on the new photo.
+    setAnalysis(null);
+    setAnalyzeError("");
+    if (!file) {
+      setAnalyzeState("idle");
+      return;
+    }
+    setAnalyzeState("analyzing");
+    analyzeGapPhoto(file)
+      .then((result) => {
+        setAnalysis(result);
+        setAnalyzeState("done");
+        // Pre-select the issue tile matching the AI's classification.
+        if (result.verified && result.type) {
+          const issueId = AI_TYPE_TO_ISSUE[result.type];
+          if (issueId) setSelectedIssues([issueId]);
+        }
+      })
+      .catch((err) => {
+        setAnalyzeState("error");
+        setAnalyzeError(err instanceof Error ? err.message : "Failed to analyze photo");
+      });
   }, []);
 
   const toggleIssue = (id: string) => {
@@ -172,6 +212,10 @@ export default function ReportPage() {
   };
 
   const submit = async () => {
+    if (!photo || analysis?.verified !== true) {
+      setError("Add a photo and let AI verify it before submitting.");
+      return;
+    }
     if (!location) {
       setError("Choose a location before submitting.");
       return;
@@ -186,11 +230,13 @@ export default function ReportPage() {
         .join(", ");
       const note = [notes.trim(), labels ? `Issues: ${labels}` : ""].filter(Boolean).join("\n");
 
-      await submitGapReport({
+      // Re-verified server-side, then inserted with status='reported'.
+      await submitVerifiedGap({
         photo,
-        coordinates: location.coords,
-        note: note || undefined,
-        type: primaryIssue.type
+        lng: location.coords[0],
+        lat: location.coords[1],
+        type: primaryIssue.type,
+        note: note || undefined
       });
       setTicket(ticketNumber());
     } catch (submitError) {
@@ -234,7 +280,7 @@ export default function ReportPage() {
         </header>
 
         <section className="report-card">
-          <label>Photo (optional but recommended)</label>
+          <label>Photo (required — AI verifies it)</label>
           <div
             className={`report-upload ${preview ? "has-file" : ""}`}
             role="button"
@@ -278,6 +324,26 @@ export default function ReportPage() {
             accept="image/*"
             onChange={(event) => selectPhoto(event.target.files?.[0] ?? null)}
           />
+          {analyzeState === "analyzing" && (
+            <p style={{ marginTop: 10, fontSize: 13, color: "#666" }}>🔍 Verifying your photo with AI…</p>
+          )}
+          {analyzeState === "error" && (
+            <p style={{ marginTop: 10, fontSize: 13, color: "#c0392b" }}>{analyzeError}</p>
+          )}
+          {analyzeState === "done" && analysis?.verified && (
+            <p style={{ marginTop: 10, fontSize: 13, color: "#1d8a5e", fontWeight: 600 }}>
+              ✓ AI verified this as a hazard
+              {typeof analysis.confidence === "number"
+                ? ` (${Math.round(analysis.confidence * 100)}% confident)`
+                : ""}
+              . Confirm the issue below and submit.
+            </p>
+          )}
+          {analyzeState === "done" && analysis && !analysis.verified && (
+            <p style={{ marginTop: 10, fontSize: 13, color: "#c0392b" }}>
+              {analysis.reason ?? "This photo doesn't clearly show a gap. Try a clearer, well-lit shot."}
+            </p>
+          )}
         </section>
 
         <section className="report-card">
@@ -336,7 +402,12 @@ export default function ReportPage() {
         </section>
 
         {error && <p className="report-submit-error">{error}</p>}
-        <button className="report-submit" type="button" onClick={submit} disabled={submitting || !location}>
+        <button
+          className="report-submit"
+          type="button"
+          onClick={submit}
+          disabled={submitting || !location || !photo || analysis?.verified !== true}
+        >
           <Send size={16} />
           {submitting ? "Submitting..." : "Submit to Atlanta 311"}
         </button>

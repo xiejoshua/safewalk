@@ -11,12 +11,15 @@ from starlette.concurrency import run_in_threadpool
 from app.directions import fetch_walking_routes, route_to_geojson
 from app.gap_reports import (
     GapReportError,
+    analyze_gap_photo,
     create_gap_report,
     list_gap_reports,
+    submit_verified_gap,
     update_gap_report_status,
     verify_and_record_gap,
 )
 from app.models import (
+    AnalyzeGapResponse,
     FastRouteResult,
     GapReport,
     GapReportCreate,
@@ -234,6 +237,57 @@ async def patch_gap_report(report_id: str, update: GapStatusUpdate) -> GapReport
     if not row:
         raise HTTPException(status_code=404, detail=f"Gap report not found: {report_id}")
     return GapReport(**row)
+
+
+@router.post("/analyze-gap", response_model=AnalyzeGapResponse)
+async def analyze_gap(photo: UploadFile = File(...)) -> AnalyzeGapResponse:
+    """Step 1 of the /status report flow: Gemini checks if the photo shows a real gap.
+
+    Returns validity + a suggested category, but does NOT store anything. The frontend
+    uses this to pre-select the category radio and unlock the Submit button.
+    """
+    image_bytes = await photo.read()
+    media_type = photo.content_type or "image/jpeg"
+
+    try:
+        result = await run_in_threadpool(analyze_gap_photo, image_bytes, media_type)
+    except GapReportError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — surface upstream failures as 502
+        logger.exception("analyze-gap failed")
+        raise HTTPException(status_code=502, detail=f"Gap analysis error: {exc}") from exc
+
+    return AnalyzeGapResponse(**result)
+
+
+@router.post("/submit-gap", response_model=VerifyGapResponse)
+async def submit_gap(
+    photo: UploadFile = File(...),
+    lng: float = Form(..., ge=-180, le=180),
+    lat: float = Form(..., ge=-90, le=90),
+    type: str = Form("other"),
+    note: str = Form(""),
+) -> VerifyGapResponse:
+    """Step 2 of the /status report flow: re-verify, then store the user-confirmed report.
+
+    Re-verifying server-side keeps the AI gate intact (a client can't skip /analyze-gap).
+    On success the row is inserted with the user's chosen category and status='reported',
+    and the realtime publication pushes the new pin to every subscribed map.
+    """
+    image_bytes = await photo.read()
+    media_type = photo.content_type or "image/jpeg"
+
+    try:
+        result = await run_in_threadpool(
+            submit_verified_gap, image_bytes, media_type, lng, lat, type, note
+        )
+    except GapReportError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — surface upstream failures as 502
+        logger.exception("submit-gap failed")
+        raise HTTPException(status_code=502, detail=f"Gap submission error: {exc}") from exc
+
+    return VerifyGapResponse(**result)
 
 
 @router.post("/verify-gap", response_model=VerifyGapResponse)

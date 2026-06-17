@@ -124,6 +124,19 @@ class VerifyGapResponse(BaseModel):
     ai_type: str | None = None
 
 
+class AnalyzeGapResponse(BaseModel):
+    """Result of /analyze-gap — validity + suggested category, no DB write."""
+
+    verified: bool
+    # Suggested category when verified (used to pre-select the report form radio).
+    type: str | None = None
+    note: str | None = None
+    confidence: float | None = None
+    # Reason the photo was rejected (only when verified is False).
+    reason: str | None = None
+    ai_type: str | None = None
+
+
 GapStatus = Literal["reported", "in_progress", "processed"]
 
 

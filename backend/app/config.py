@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     supabase_key: str = ""
     supabase_anon_key: str = ""
     anthropic_api_key: str = ""
+    # Gemini vision — verifies crowdsourced gap photos before they become live pins.
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
     gap_photos_bucket: str = "gap-photos"
 
     @property

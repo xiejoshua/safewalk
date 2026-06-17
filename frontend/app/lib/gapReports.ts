@@ -99,6 +99,16 @@ export function subscribeGapReports(onInsert: (report: GapReport) => void): () =
   };
 }
 
+async function readErrorDetail(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = (await res.json()) as { detail?: string };
+    if (body.detail) return body.detail;
+  } catch {
+    /* keep default */
+  }
+  return fallback;
+}
+
 // Move a report between workflow statuses. Returns the updated row.
 export async function updateGapStatus(id: string, status: GapStatus): Promise<GapReport> {
   if (!API_BASE_URL) throw new Error("Backend not configured (NEXT_PUBLIC_SAFEWALK_API_URL).");
@@ -107,15 +117,53 @@ export async function updateGapStatus(id: string, status: GapStatus): Promise<Ga
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ status })
   });
-  if (!res.ok) {
-    let detail = "Failed to update status";
-    try {
-      const body = (await res.json()) as { detail?: string };
-      if (body.detail) detail = body.detail;
-    } catch {
-      /* keep default */
-    }
-    throw new Error(detail);
-  }
+  if (!res.ok) throw new Error(await readErrorDetail(res, "Failed to update status"));
   return res.json() as Promise<GapReport>;
+}
+
+// ── Two-step photo report flow (used by the /status report form) ──────────────
+
+export type AnalyzeGapResult = {
+  verified: boolean;
+  type?: string;        // suggested category when verified (pre-selects the radio)
+  note?: string;        // AI description of what's visible
+  confidence?: number;
+  reason?: string;      // why it was rejected (when verified is false)
+  ai_type?: string;
+};
+
+// Step 1: ask the backend (Gemini) whether the photo shows a real gap. No DB write.
+export async function analyzeGapPhoto(photo: File): Promise<AnalyzeGapResult> {
+  if (!API_BASE_URL) throw new Error("Backend not configured (NEXT_PUBLIC_SAFEWALK_API_URL).");
+  const form = new FormData();
+  form.append("photo", photo);
+  const res = await fetch(`${API_BASE_URL}/analyze-gap`, { method: "POST", body: form });
+  if (!res.ok) throw new Error(await readErrorDetail(res, "Failed to analyze photo"));
+  return res.json() as Promise<AnalyzeGapResult>;
+}
+
+// Step 2: store the user-confirmed report (re-verified server-side). Returns the new row.
+export async function submitVerifiedGap(params: {
+  photo: File;
+  lng: number;
+  lat: number;
+  type: string;
+  note?: string;
+}): Promise<GapReport> {
+  if (!API_BASE_URL) throw new Error("Backend not configured (NEXT_PUBLIC_SAFEWALK_API_URL).");
+  const form = new FormData();
+  form.append("photo", params.photo);
+  form.append("lng", String(params.lng));
+  form.append("lat", String(params.lat));
+  form.append("type", params.type);
+  if (params.note) form.append("note", params.note);
+
+  const res = await fetch(`${API_BASE_URL}/submit-gap`, { method: "POST", body: form });
+  if (!res.ok) throw new Error(await readErrorDetail(res, "Failed to submit report"));
+
+  const data = (await res.json()) as { verified: boolean; report?: GapReport; reason?: string };
+  if (!data.verified || !data.report) {
+    throw new Error(data.reason ?? "The photo could not be verified as a gap.");
+  }
+  return { ...data.report, id: String(data.report.id) };
 }

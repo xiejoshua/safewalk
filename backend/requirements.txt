@@ -13,5 +13,5 @@ python-dotenv>=1.0.0
 rasterio>=1.3.0
 rioxarray>=0.15.0
 supabase>=2.0.0
-# Live gap-report photo verification (Claude vision)
-anthropic>=0.40.0
+# Live gap-report photo verification (Gemini vision)
+google-genai>=0.3.0

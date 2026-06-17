@@ -1,10 +1,15 @@
 """gap_reports.py — live crowdsourced gap-report pipeline.
 
-Flow (called from the /verify-gap route):
-    photo bytes + coordinates
-      -> Claude vision verifies a real pedestrian-access gap is visible
-      -> if verified: upload photo to Supabase Storage, insert into gap_reports
-      -> realtime publication pushes the new pin to every subscribed frontend map
+Two-step flow used by the /status report form:
+    1. /analyze-gap : photo bytes
+         -> Gemini vision decides whether a real pedestrian-access gap is visible
+         -> returns {verified, type, note, confidence} WITHOUT writing anything.
+            The frontend uses this to pre-select the category and unlock Submit.
+    2. /submit-gap : photo bytes + coordinates + user-chosen type + note
+         -> re-verifies with Gemini (the gate can't be bypassed by posting straight
+            to /submit-gap), then uploads the photo to Supabase Storage and inserts
+            the row with the user's chosen category and status='reported'.
+         -> the realtime publication pushes the new pin to every subscribed map.
 
 The AI verification is the gate: an unverified photo never becomes a pin. Because
 the insert runs server-side here (not from the browser), the gate can't be bypassed
@@ -15,11 +20,11 @@ requires credentials (keeps the rest of the app importable offline / in tests).
 """
 from __future__ import annotations
 
-import base64
 import logging
 import uuid
 from functools import lru_cache
 
+from pydantic import BaseModel
 from shapely import wkb as shapely_wkb
 from shapely.geometry import Point
 
@@ -42,8 +47,6 @@ GAP_TYPES = (
 # clearer photo rather than dropping a low-quality pin onto the map.
 _MIN_CONFIDENCE = 0.55
 
-_VISION_MODEL = "claude-opus-4-8"
-
 _SYSTEM_PROMPT = (
     "You verify crowdsourced sidewalk-hazard reports for a pedestrian safety map. "
     "You are shown a photo a pedestrian took of a suspected gap in walking "
@@ -62,33 +65,29 @@ _SYSTEM_PROMPT = (
     "confidence: 0.0-1.0, how sure you are this is a real, classifiable hazard."
 )
 
-_OUTPUT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "is_gap": {"type": "boolean"},
-        "type": {"type": "string", "enum": list(GAP_TYPES)},
-        "note": {"type": "string"},
-        "confidence": {"type": "number"},
-    },
-    "required": ["is_gap", "type", "note", "confidence"],
-    "additionalProperties": False,
-}
-
-
 class GapReportError(RuntimeError):
     """Configuration or upstream failure while processing a gap report."""
 
 
-@lru_cache
-def _anthropic_client():
-    settings = get_settings()
-    if not settings.anthropic_api_key:
-        raise GapReportError(
-            "ANTHROPIC_API_KEY is not set — photo verification is unavailable."
-        )
-    import anthropic
+class _GapVerdict(BaseModel):
+    """Structured output Gemini must return for each analyzed photo."""
 
-    return anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    is_gap: bool
+    type: str
+    note: str
+    confidence: float
+
+
+@lru_cache
+def _gemini_client():
+    settings = get_settings()
+    if not settings.gemini_api_key:
+        raise GapReportError(
+            "GEMINI_API_KEY is not set — photo verification is unavailable."
+        )
+    from google import genai
+
+    return genai.Client(api_key=settings.gemini_api_key)
 
 
 @lru_cache
@@ -103,39 +102,37 @@ def _supabase_client():
     return create_client(settings.supabase_url, settings.supabase_service_key)
 
 
-def _verify_with_vision(image_b64: str, media_type: str) -> dict:
-    """Ask Claude whether the photo shows a real gap; returns the parsed JSON verdict."""
+def _analyze_with_gemini(image_bytes: bytes, media_type: str) -> dict:
+    """Ask Gemini whether the photo shows a real gap; returns the parsed JSON verdict.
+
+    Uses Gemini structured output (response_schema) so the reply is always valid
+    JSON matching _GapVerdict. Falls back to parsing response.text if needed.
+    """
     import json
 
-    client = _anthropic_client()
-    response = client.messages.create(
-        model=_VISION_MODEL,
-        max_tokens=512,
-        system=_SYSTEM_PROMPT,
-        output_config={"format": {"type": "json_schema", "schema": _OUTPUT_SCHEMA}},
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": image_b64,
-                        },
-                    },
-                    {
-                        "type": "text",
-                        "text": "Is this a real pedestrian-access gap? Classify it.",
-                    },
-                ],
-            }
+    from google.genai import types
+
+    settings = get_settings()
+    client = _gemini_client()
+    response = client.models.generate_content(
+        model=settings.gemini_model,
+        contents=[
+            types.Part.from_bytes(data=image_bytes, mime_type=media_type),
+            "Is this a real pedestrian-access gap? Classify it.",
         ],
+        config=types.GenerateContentConfig(
+            system_instruction=_SYSTEM_PROMPT,
+            response_mime_type="application/json",
+            response_schema=_GapVerdict,
+            temperature=0.0,
+        ),
     )
-    # output_config.format guarantees the first text block is schema-valid JSON.
-    text = next((b.text for b in response.content if b.type == "text"), "")
-    return json.loads(text)
+
+    parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, _GapVerdict):
+        return parsed.model_dump()
+    # Fallback: structured parse unavailable — read the raw JSON text.
+    return json.loads(response.text or "{}")
 
 
 def _upload_photo(image_bytes: bytes, media_type: str) -> str:
@@ -229,37 +226,35 @@ def update_gap_report_status(report_id: str, status: str) -> dict:
     return rows[0] if rows else {}
 
 
-def verify_and_record_gap(
-    image_bytes: bytes,
-    media_type: str,
-    lng: float,
-    lat: float,
-    user_note: str = "",
-) -> dict:
-    """Verify a gap photo and, if real, persist it as a live pin.
+_ALLOWED_MEDIA = {"image/jpeg", "image/png", "image/webp"}
+
+
+def _normalize_media_type(media_type: str) -> str:
+    return media_type if media_type in _ALLOWED_MEDIA else "image/jpeg"
+
+
+def analyze_gap_photo(image_bytes: bytes, media_type: str = "image/jpeg") -> dict:
+    """Verify a photo shows a real gap WITHOUT storing anything (the /analyze-gap step).
 
     Returns a dict the route serializes directly:
-      verified=False -> {verified, reason, ai_type, confidence}
-      verified=True  -> {verified, report:{id,type,note,photo_url,lng,lat,...}, confidence}
+      rejected -> {verified: False, reason, ai_type, confidence}
+      accepted -> {verified: True, type, note, confidence}
+    The frontend uses `type` to pre-select the category radio and unlock Submit.
     """
     if not image_bytes:
         raise GapReportError("No image data received.")
 
-    media_type = media_type if media_type in {
-        "image/jpeg", "image/png", "image/webp"
-    } else "image/jpeg"
-
-    image_b64 = base64.standard_b64encode(image_bytes).decode("ascii")
-    verdict = _verify_with_vision(image_b64, media_type)
+    media_type = _normalize_media_type(media_type)
+    verdict = _analyze_with_gemini(image_bytes, media_type)
 
     is_gap = bool(verdict.get("is_gap"))
     confidence = float(verdict.get("confidence") or 0.0)
-    ai_type = verdict.get("type", "other")
+    ai_type = verdict.get("type") if verdict.get("type") in GAP_TYPES else "other"
     ai_note = (verdict.get("note") or "").strip()
 
     if not is_gap or confidence < _MIN_CONFIDENCE:
         logger.info(
-            "gap_report rejected (is_gap=%s, confidence=%.2f)", is_gap, confidence
+            "gap photo rejected (is_gap=%s, confidence=%.2f)", is_gap, confidence
         )
         return {
             "verified": False,
@@ -271,10 +266,53 @@ def verify_and_record_gap(
             "confidence": round(confidence, 2),
         }
 
-    # Prefer the user's note when supplied; otherwise use the AI's description.
-    note = user_note.strip() or ai_note
-    photo_url = _upload_photo(image_bytes, media_type)
-    report = _insert_report(lng, lat, ai_type, note, photo_url)
+    return {
+        "verified": True,
+        "type": ai_type,
+        "note": ai_note,
+        "confidence": round(confidence, 2),
+    }
 
-    logger.info("gap_report verified and stored: %s (%s)", report.get("id"), ai_type)
-    return {"verified": True, "report": report, "confidence": round(confidence, 2)}
+
+def submit_verified_gap(
+    image_bytes: bytes,
+    media_type: str,
+    lng: float,
+    lat: float,
+    gap_type: str = "",
+    user_note: str = "",
+) -> dict:
+    """Re-verify a photo and, if real, persist it as a live pin (the /submit-gap step).
+
+    Re-running the AI check keeps the gate intact even though /analyze-gap ran first:
+    a client can't bypass verification by POSTing straight to /submit-gap.
+
+    Returns a dict the route serializes directly:
+      rejected -> {verified: False, reason, ai_type, confidence}
+      accepted -> {verified: True, report:{id,type,note,photo_url,lng,lat,...}, confidence}
+    """
+    analysis = analyze_gap_photo(image_bytes, media_type)
+    if not analysis["verified"]:
+        return analysis
+
+    media_type = _normalize_media_type(media_type)
+    # Prefer the user's chosen category; fall back to the AI's classification.
+    chosen_type = gap_type if gap_type in GAP_TYPES else analysis["type"]
+    # Prefer the user's note when supplied; otherwise use the AI's description.
+    note = user_note.strip() or analysis["note"]
+    photo_url = _upload_photo(image_bytes, media_type)
+    report = _insert_report(lng, lat, chosen_type, note, photo_url)
+
+    logger.info("gap_report stored: %s (%s)", report.get("id"), chosen_type)
+    return {"verified": True, "report": report, "confidence": analysis["confidence"]}
+
+
+def verify_and_record_gap(
+    image_bytes: bytes,
+    media_type: str,
+    lng: float,
+    lat: float,
+    user_note: str = "",
+) -> dict:
+    """Back-compat verify + store using the AI's own classification (no user category)."""
+    return submit_verified_gap(image_bytes, media_type, lng, lat, "", user_note)
