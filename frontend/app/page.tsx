@@ -487,22 +487,15 @@ function PreferencePanel({
           />
         </div>
       ))}
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          paddingTop: 6,
-          fontSize: 13,
-          color: "#666",
-        }}
-      >
+      <label className="step-free-row">
+        Wheelchair-accessible only
         <input
+          className="step-free-input"
           type="checkbox"
           checked={stepFree}
           onChange={(event) => onStepFreeChange(event.target.checked)}
         />
-        Wheelchair-accessible only
+        <span className="step-free-switch" aria-hidden="true" />
       </label>
     </section>
   );
