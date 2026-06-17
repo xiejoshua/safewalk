@@ -1,16 +1,13 @@
 "use client";
 
 import {
-  AlertTriangle,
   ArrowRight,
   ArrowUp,
-  Clock3,
   CornerUpLeft,
   CornerUpRight,
   Flag,
   Footprints,
   MapPin,
-  Shield,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -698,12 +695,12 @@ function RoutesPanel({
           tabIndex={0}
         >
           <header>
-            <strong><Shield size={18} /> Safe route</strong>
+            <strong>Safe route</strong>
             <span>Recommended</span>
           </header>
           <div className="stats-row">
             <div className="route-meta">
-              <span><Clock3 size={15} /> Time: {safe.minutes} min</span>
+              <span>Time: {safe.minutes} min</span>
               <span>Distance: {safe.miles} mi</span>
             </div>
             <SafetyScore value={adjustedRouteScore(safe, stats ? 5 : 0)} tone="safe" />
@@ -716,12 +713,12 @@ function RoutesPanel({
           tabIndex={0}
         >
           <header>
-            <strong><AlertTriangle size={18} /> Default route</strong>
+            <strong>Default route</strong>
             <span>{stats && def.dangerZones != null ? `${def.dangerZones} danger zones` : "Fastest"}</span>
           </header>
           <div className="stats-row">
             <div className="route-meta">
-              <span><Clock3 size={15} /> Time: {def.minutes} min</span>
+              <span>Time: {def.minutes} min</span>
               <span>Distance: {def.miles} mi</span>
             </div>
             <SafetyScore value={adjustedRouteScore(def, stats ? -5 : 0)} tone="danger" />
