@@ -35,12 +35,16 @@ const DOTS = 5;
 // Each slider dot maps to 0/25/50/75/100 on the backend's 0–100 scale.
 const SLIDER_SCALE = 25;
 
-// Theme-driven defaults (in DOTS units). Match DESIGN.md §7c roughly:
-//   light/day  → sidewalks 30, safety 55, comfort 15  → discrete 1/2/1
-//   dark/night → sidewalks 20, safety 70, comfort 10  → discrete 1/3/0
+// Theme-driven defaults (in DOTS units). Light = balanced; dark drops sidewalk
+// weight entirely so the safety-weighted Dijkstra is actually free to pick a
+// different path. At any non-zero sidewalk weight, the sidewalk_cov term
+// dominates the per-segment risk math and the route stays anchored to the
+// light-mode path regardless of how high safety goes.
+//   light/day  → 25/50/25  → discrete 1/2/1
+//   dark/night → 0/75/25   → discrete 0/3/1
 const SLIDER_DEFAULTS: Record<"light" | "dark", Record<PreferenceKey, number>> = {
   light: { sidewalks: 1, safety: 2, comfort: 1 },
-  dark:  { sidewalks: 1, safety: 3, comfort: 0 },
+  dark:  { sidewalks: 0, safety: 3, comfort: 1 },
 };
 
 const DEFAULT_ROUTE_READOUT: Record<PreferenceKey, number> = {
@@ -242,17 +246,20 @@ export default function Home() {
   const [stepFree, setStepFree] = useState(false);
   const [userTouched, setUserTouched] = useState(false);
 
-  // Theme change resets slider defaults UNTIL the user has moved a slider.
-  // Option α from DESIGN: light/dark theme is also the day/night profile.
+  // Theme = day/night profile. Always re-apply the theme's slider defaults
+  // when theme toggles, even if the user previously moved sliders — otherwise
+  // the dark-mode demo beat becomes a no-op after any slider interaction
+  // (the backend ignores the `theme` query param when sliders are explicitly
+  // sent, so without a slider reset the route wouldn't change).
   useEffect(() => {
-    if (userTouched) return;
     setPreferences(hasRequestedRouteRef.current ? SLIDER_DEFAULTS[theme] : DEFAULT_ROUTE_READOUT);
     setRoutingPreferences(SLIDER_DEFAULTS[theme]);
     setRoutePreferenceReadouts((current) => ({
       ...current,
       safe: hasRequestedRouteRef.current ? SLIDER_DEFAULTS[theme] : DEFAULT_ROUTE_READOUT
     }));
-  }, [theme, userTouched]);
+    setUserTouched(false);
+  }, [theme]);
 
   // Add or replace a report by id (used by both realtime INSERTs and optimistic adds).
   const upsertGapReport = useCallback((report: GapReport) => {
