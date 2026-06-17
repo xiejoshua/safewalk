@@ -33,6 +33,7 @@ from app.models import (
 )
 from app.network import GraphRouter, serialize_segment
 from app.scoring import (
+    SLIDER_DEFAULTS as SCORING_SLIDER_DEFAULTS,
     build_explanation,
     resolve_weights_from_sliders,
     score_route,
@@ -120,6 +121,20 @@ def _to_route_segments(segments: list[dict], include_risk: bool) -> list[RouteSe
     return output
 
 
+def _safe_slider_weights(
+    sidewalks: int | None,
+    safety: int | None,
+    comfort: int | None,
+    theme: Literal["light", "dark"],
+) -> dict[str, float]:
+    defaults = SCORING_SLIDER_DEFAULTS[theme]
+    return {
+        "sidewalks": float(sidewalks if sidewalks is not None else defaults["sidewalks"]),
+        "safety": float(safety if safety is not None else defaults["safety"]),
+        "comfort": float(comfort if comfort is not None else defaults["comfort"]),
+    }
+
+
 @router.get("/route", response_model=RouteResponse)
 def get_route(
     http_request: Request,
@@ -161,10 +176,12 @@ def get_route(
             total_risk=round(mean_risk, 6),
             distance_m=round(safe_distance, 2),
             explanation=explanation,
+            slider_weights=_safe_slider_weights(sidewalks, safety, comfort, theme),
         ),
         fast_route=FastRouteResult(
             segments=_to_route_segments(fast_segments, include_risk=True),
             distance_m=round(fast_distance, 2),
+            slider_weights={"sidewalks": 0.0, "safety": 0.0, "comfort": 0.0},
         ),
     )
 

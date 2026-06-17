@@ -25,6 +25,7 @@ import {
   osrmRouteStats,
   segmentsToFeatures,
   submitGapReport as submitGapReportToBackend,
+  type RouteSliderWeights,
   type RouteStats
 } from "./lib/backendApi";
 import { fetchGapReports, gapTypeMeta, subscribeGapReports, type GapReport } from "./lib/gapReports";
@@ -43,6 +44,20 @@ const SLIDER_DEFAULTS: Record<"light" | "dark", Record<PreferenceKey, number>> =
   light: { sidewalks: 1, safety: 2, comfort: 1 },
   dark:  { sidewalks: 1, safety: 3, comfort: 0 },
 };
+
+const DEFAULT_ROUTE_READOUT: Record<PreferenceKey, number> = {
+  sidewalks: 0,
+  safety: 0,
+  comfort: 0,
+};
+
+function sliderWeightsToPreferences(weights: RouteSliderWeights): Record<PreferenceKey, number> {
+  return {
+    sidewalks: Math.round(Math.min(Math.max(weights.sidewalks, 0), 100) / SLIDER_SCALE),
+    safety: Math.round(Math.min(Math.max(weights.safety, 0), 100) / SLIDER_SCALE),
+    comfort: Math.round(Math.min(Math.max(weights.comfort, 0), 100) / SLIDER_SCALE),
+  };
+}
 
 const RealMap = dynamic(() => import("./components/RealMap"), { ssr: false });
 
@@ -199,6 +214,7 @@ export default function Home() {
   const [selectedRoute, setSelectedRoute] = useState<RouteChoice>("safe");
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [gapReports, setGapReports] = useState<GapReport[]>([]);
+  const hasRequestedRouteRef = useRef(false);
   // Both routes from the backend, keyed by the safe/default toggle.
   const [routes, setRoutes] = useState<Record<RouteChoice, GeoJSON.FeatureCollection> | null>(null);
   const [routeStats, setRouteStats] = useState<Record<RouteChoice, RouteStats> | null>(null);
@@ -211,6 +227,13 @@ export default function Home() {
   const [preferences, setPreferences] = useState<Record<PreferenceKey, number>>(
     SLIDER_DEFAULTS.light,
   );
+  const [routingPreferences, setRoutingPreferences] = useState<Record<PreferenceKey, number>>(
+    SLIDER_DEFAULTS.light,
+  );
+  const [routePreferenceReadouts, setRoutePreferenceReadouts] = useState<Record<RouteChoice, Record<PreferenceKey, number>>>({
+    safe: SLIDER_DEFAULTS.light,
+    default: DEFAULT_ROUTE_READOUT,
+  });
   const [stepFree, setStepFree] = useState(false);
   const [userTouched, setUserTouched] = useState(false);
 
@@ -219,6 +242,8 @@ export default function Home() {
   useEffect(() => {
     if (userTouched) return;
     setPreferences(SLIDER_DEFAULTS[theme]);
+    setRoutingPreferences(SLIDER_DEFAULTS[theme]);
+    setRoutePreferenceReadouts((current) => ({ ...current, safe: SLIDER_DEFAULTS[theme] }));
   }, [theme, userTouched]);
 
   // Add or replace a report by id (used by both realtime INSERTs and optimistic adds).
@@ -246,6 +271,7 @@ export default function Home() {
 
   const requestRoute = useCallback(async () => {
     if (!start.trim() || !destination.trim()) return;
+    hasRequestedRouteRef.current = true;
     setRouteStatus("loading");
 
     try {
@@ -260,11 +286,15 @@ export default function Home() {
         const route = await getSafeRoute({
           origin,
           dest,
-          sidewalks: preferences.sidewalks * SLIDER_SCALE,
-          safety:    preferences.safety    * SLIDER_SCALE,
-          comfort:   preferences.comfort   * SLIDER_SCALE,
+          sidewalks: routingPreferences.sidewalks * SLIDER_SCALE,
+          safety:    routingPreferences.safety    * SLIDER_SCALE,
+          comfort:   routingPreferences.comfort   * SLIDER_SCALE,
           stepFree,
           theme,
+        });
+        setRoutePreferenceReadouts({
+          safe: sliderWeightsToPreferences(route.safe_route.slider_weights),
+          default: sliderWeightsToPreferences(route.fast_route.slider_weights),
         });
         setRoutes({
           safe: segmentsToFeatures(route.safe_route.segments),
@@ -281,6 +311,10 @@ export default function Home() {
         setRoutes({ safe: fallback, default: fallback });
         const stats = osrmRouteStats(fallback);
         setRouteStats({ safe: stats, default: stats });
+        setRoutePreferenceReadouts({
+          safe: routingPreferences,
+          default: DEFAULT_ROUTE_READOUT,
+        });
       }
       setRouteStatus("done");
       setRouteRequest((request) => request + 1);
@@ -290,7 +324,32 @@ export default function Home() {
       setRouteStats(null);
       setRouteStatus("error");
     }
-  }, [destination, destinationCoords, preferences, start, startCoords, stepFree, theme]);
+  }, [destination, destinationCoords, routingPreferences, start, startCoords, stepFree, theme]);
+
+  useEffect(() => {
+    if (!hasRequestedRouteRef.current) return;
+    if (!startCoords || !destinationCoords) return;
+
+    const handle = window.setTimeout(() => {
+      void requestRoute();
+    }, 250);
+
+    return () => window.clearTimeout(handle);
+  }, [routingPreferences, stepFree, theme, startCoords, destinationCoords, requestRoute]);
+
+  const selectRoute = useCallback((route: RouteChoice) => {
+    setSelectedRoute(route);
+    setPreferences(routePreferenceReadouts[route]);
+    setUserTouched(true);
+  }, [routePreferenceReadouts]);
+
+  const updatePreferences = useCallback((next: Record<PreferenceKey, number>) => {
+    setSelectedRoute("safe");
+    setPreferences(next);
+    setRoutingPreferences(next);
+    setRoutePreferenceReadouts((current) => ({ ...current, safe: next }));
+    setUserTouched(true);
+  }, []);
 
   const co2 = useMemo(() => {
     const miles = routeStats?.safe.miles ?? routeData.safe_route.distance_mi;
@@ -346,10 +405,7 @@ export default function Home() {
           <div className="sidebar-card">
             <PreferencePanel
               preferences={preferences}
-              onPreferencesChange={(next) => {
-                setPreferences(next);
-                setUserTouched(true);
-              }}
+              onPreferencesChange={updatePreferences}
               stepFree={stepFree}
               onStepFreeChange={(value) => {
                 setStepFree(value);
@@ -379,7 +435,7 @@ export default function Home() {
                 co2={co2}
                 pathKey={`${selectedRoute}-${routeRequest}`}
                 selectedRoute={selectedRoute}
-                onSelectRoute={setSelectedRoute}
+                onSelectRoute={selectRoute}
                 stats={routeStats}
               />
             )}

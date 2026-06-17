@@ -69,16 +69,24 @@ class RouteSegment(BaseModel):
     risk: float | None = None
 
 
+class RouteSliderWeights(BaseModel):
+    sidewalks: float
+    safety: float
+    comfort: float
+
+
 class SafeRouteResult(BaseModel):
     segments: list[RouteSegment]
     total_risk: float
     distance_m: float
     explanation: str
+    slider_weights: RouteSliderWeights
 
 
 class FastRouteResult(BaseModel):
     segments: list[RouteSegment]
     distance_m: float
+    slider_weights: RouteSliderWeights
 
 
 class RouteResponse(BaseModel):

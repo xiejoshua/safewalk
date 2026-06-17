@@ -49,16 +49,24 @@ export type RouteStats = {
   dangerZones: number | null;
 };
 
+export type RouteSliderWeights = {
+  sidewalks: number;
+  safety: number;
+  comfort: number;
+};
+
 export type SafeRouteResponse = {
   safe_route: {
     segments: RouteApiSegment[];
     total_risk: number;
     distance_m: number;
     explanation: string;
+    slider_weights: RouteSliderWeights;
   };
   fast_route: {
     segments: RouteApiSegment[];
     distance_m: number;
+    slider_weights: RouteSliderWeights;
   };
 };
 
