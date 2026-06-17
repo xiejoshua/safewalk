@@ -1008,6 +1008,12 @@ button:disabled {
   margin-top: 0;
 }
 
+.report-action-row {
+  display: flex;
+  justify-content: flex-start;
+  width: min(400px, calc(100vw - 36px));
+}
+
 .report-fab {
   display: inline-flex;
   align-items: center;
