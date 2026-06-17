@@ -851,9 +851,11 @@ function MapPanel({
             <small>You&apos;ll add a photo for AI verification on the next step.</small>
           </div>
         )}
-        <button className="report-fab" onClick={toggleReport}>
-          {picking ? "Cancel" : "Report gap"}
-        </button>
+        <div className="report-action-row">
+          <button className="report-fab" onClick={toggleReport}>
+            {picking ? "Cancel" : "Report gap"}
+          </button>
+        </div>
       </div>
     </section>
   );
