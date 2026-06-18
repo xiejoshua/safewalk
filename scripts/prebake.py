@@ -17,9 +17,6 @@ Output (tracked, pushable — backend/data/ is gitignored):
   outputs/scored_segments.parquet     — scored network for the backend to read
   outputs/scored_segments.meta.json   — receipts + canary warnings
 
-This is the canonical pipeline. `backend/scripts/run_overlay.py` is left
-in place for now but is functionally superseded.
-
 CLI:
   python scripts/prebake.py
   python scripts/prebake.py --bbox -84.37 33.58 -84.29 33.65
@@ -104,7 +101,7 @@ log = logging.getLogger("prebake")
 # =========================================================================
 
 def build_full_network(corridor_name: str) -> gpd.GeoDataFrame:
-    """Same recipe as scripts/build_sample_network.py minus the slice."""
+    """Build the full segmentized walk network for the corridor."""
     log.info("loading OSM cache: %s", corridor_name)
     data = load_cached_osm(corridor_name)
     nodes, ways = parse_elements(data)

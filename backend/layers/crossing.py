@@ -84,8 +84,7 @@ NODE_SNAP_M = 5.0
 
 
 # --- Corridor name (used to load OSM cache) ------------------------------
-# Read from corridor.json at runtime — matches the pattern used by
-# scripts/build_sample_network.py.
+# Read from corridor.json at runtime.
 def _corridor_name() -> str:
     import json
     return json.loads((REPO / "corridor.json").read_text())["name"]

@@ -2,401 +2,406 @@
 
 **Tagline:** Safe-walk routing + crowdsourced gap-mapping that makes the *last mile to MARTA* walkable for Atlanta's transit-dependent riders — and hands the city the data to fix what's broken.
 
-| | |
-|---|---|
-| **Event** | Cox "Play With Purpose" Sustainability Hackathon — Track 04 *Moving Things & People* (Delta Air Lines + Mercedes-Benz), Problem #2 *Transit Equity & First/Last Mile* |
-| **Location / Dates** | Atlanta, GA · June 14–17, 2026 |
-| **Status** | Draft for build — decisions locked, open questions flagged in §17 |
-| **Team** | R1 Frontend + Pitch · R2 Backend + Scoring · R3 Data: Network & Pipeline · R4 Data: Hazards, Env & Supabase |
-| **Judging weights** | Value 20% · Innovation 25% · Polish 25% · Impact 30% |
-
 ---
 
 ## 1. Executive summary
 
-MARTA spent 2026 fixing how riders move *between* stops (Reach on-demand microtransit, the NextGen bus redesign, Better Breeze tap-to-pay). The gap that remains is the **walk to the stop**: in low-income South Atlanta, the last mile is often a sidewalk-less arterial, an unsignalized crossing, unshaded pavement, or a crash hotspot — which silently severs transit-dependent residents from transit they live next to. SidewalkSOS is a web app that routes riders on the **safest** walk between a MARTA stop and their destination (not the shortest), explains why, and — where no safe route exists — lets them report the gap into a live map that becomes a Vision Zero deliverable for the city. It is built as a thin "smart wrapper": off-the-shelf map + routing, with our only original code being a multi-factor safety-scoring layer that ranks routes by a metric the map APIs don't expose.
+MARTA spent 2026 fixing how riders move *between* stops (Reach on-demand microtransit, the NextGen bus redesign, Better Breeze tap-to-pay). The gap that remains is the **walk to the stop**: in low-income South Atlanta, the last mile is often a sidewalk-less arterial, an unsignalized crossing, unshaded pavement, or a crash hotspot. Safewalk is a web app that routes riders on the **safest** walk between a MARTA stop and their destination (not the shortest), explains why, and — where no safe route exists — lets them photograph the gap into a live map. The original work is a multi-factor safety-scoring layer baked into a 30k-segment parquet, a Dijkstra over that scored graph, and a Gemini-vision gate on crowdsourced photos.
 
-## 2. Problem statement & motivation
+## 2. Problem statement
 
-The first/last-mile problem is usually framed as **distance** (the stop isn't at your door). MARTA already built the vehicle answer in 2026. The unsolved problem is **walkability**: whether the last-mile distance is *traversable on foot at all*.
+The first/last-mile problem is usually framed as **distance**. MARTA already built the vehicle answer in 2026. The unsolved problem is **walkability**: whether the last-mile distance is *traversable on foot at all*.
 
-- **MARTA's 2026 baseline (so we don't rebuild what shipped):** Reach went permanent Mar 7, 2026 (12 zones, $2.50 fare) ([ATL News 2026](https://georgia.atl.news/2026/03/04/from-pilot-to-permanent-marta-reach-officially-launches-system-wide-this-saturday/)); the NextGen bus network launched Apr 18, 2026 ([Metro Magazine](https://www.metro-magazine.com/news/marta-set-to-launch-next-gen-bus-network)); Better Breeze contactless launched Mar 28, 2026 ([Urbanize Atlanta 2026](https://atlanta.urbanize.city/post/marta-better-breeze-upgraded-tap-pay-system-goes-live-soon)).
-- **The equity geography:** MARTA serves Fulton + DeKalb (+ Clayton since 2014); Cobb (1965) and Gwinnett (1971/1990/2019/2020) repeatedly opted out ([AJC 2025](https://www.ajc.com/news/2025/10/riding-the-color-line-how-race-built-atlantas-marta-system/)). The I-20 line was a *designed* racial boundary (1960 plan) ([Smart Growth America 2023](https://www.smartgrowthamerica.org/signature-reports/divided-by-design/atlantas-story/)).
-- **The danger is measurable and unequal:** historically redlined tracts have **2.6× higher pedestrian-fatality rates** ([Taylor et al., AJPH 2023](https://ajph.aphapublications.org/doi/10.2105/AJPH.2022.307192)).
-- **The canonical failure case:** at Gillem Logistics Center, transit workers walk **1.5–2 miles along busy roadways with no sidewalk**; many transit commutes exceed an hour ([Georgia Tech / ARC 2022](https://atlantaregional.org/whats-next-atl/articles/marta-reach-aims-to-address-first-mile-last-mile-issue/)).
-- **The stakes:** Atlanta is ~81% drive / ~2% transit, transit commute ~53 min ([ACS via Streetsblog 2019](https://usa.streetsblog.org/2019/05/06/study-commutes-are-longer-when-cities-fail-on-transit)); only ~30% of metro jobs are reachable in 90 min by transit ([Brookings 2011](https://www.brookings.edu/articles/missed-opportunity-transit-and-jobs-in-metropolitan-america/)).
+- **Equity geography:** MARTA serves Fulton + DeKalb (+ Clayton since 2014); Cobb and Gwinnett repeatedly opted out. Historically redlined tracts have **2.6× higher pedestrian-fatality rates** ([AJPH 2023](https://ajph.aphapublications.org/doi/10.2105/AJPH.2022.307192)).
+- **Canonical failure case:** at Gillem Logistics Center, transit workers walk **1.5–2 miles along busy roadways with no sidewalk** ([Georgia Tech / ARC 2022](https://atlantaregional.org/whats-next-atl/articles/marta-reach-aims-to-address-first-mile-last-mile-issue/)).
 
 ## 3. Goals & non-goals
 
 **Goals**
-- Route a rider on the *safest* walk (multi-factor), not the shortest, between a MARTA stop and a destination.
+- Route a rider on the *safest* walk (multi-factor), not the shortest.
 - Explain *why* a route is safer, in plain language.
-- Capture rider-reported gaps into a live map usable by the city.
-- Tell a credible, sourced equity + sustainability story for judges.
+- Capture rider-reported gaps into a live map usable by the city, with an AI gate so the map can't be poisoned with junk photos.
 
-**Non-goals (explicit)**
-- **We do NOT extend MARTA's network reach.** We do not get rail to Cumberland/Gwinnett. We operate within walking range of existing stops.
-- We do not build microtransit, fare payment, or trip-planning across modes (MARTA already shipped these).
-- We do not produce certified ADA routing — `accessible` mode is a best-effort signal (§7c), not a compliance guarantee.
-- **Not citywide for v1 — one corridor** (a *deliberate* MVP scope, not a code limitation). `prebake.py` is **parameterized by a bounding box**, so citywide is a config change, not a rewrite — we bake and *ground-truth* one corridor to keep every safety claim defensible (see §11).
+**Non-goals**
+- We do **not** extend MARTA's network reach. We operate within walking range of existing stops.
+- We do **not** build microtransit, fare payment, or trip-planning across modes.
+- The wheelchair-accessible toggle (`step_free`) is a best-effort signal, not certified ADA routing.
+- **One corridor for v1.** `prebake.py` is `--bbox`-parameterized, so citywide is a config + cache-refresh, not a rewrite — we ground-truth one corridor to keep every safety claim defensible.
 
-## 4. Target users & key use cases
+## 4. Solution overview
 
-**Primary persona — "Marcus," carless shift worker.** Commutes by bus to a logistics job; the bus drops him ~1 mile out along a road with no sidewalk. No car, prepaid phone, limited data. Needs: the safest way to walk the last mile; reassurance before he sets out in the dark.
+**User flow:** pick start + destination → backend runs a safety-weighted Dijkstra over the pre-scored walk graph and returns both the safe path and the shortest path → frontend draws both colored per-segment by risk → rider tunes sliders / theme / wheelchair toggle and the route auto-reruns (750 ms debounce) → optionally photographs a gap → Gemini gates the photo → on accept, Supabase stores it and the realtime publication pushes the pin to every open map.
 
-**Secondary persona — "Dana," city/ARC planner.** Runs Vision Zero analysis. Needs: evidence of where the pedestrian network fails transit riders, to prioritize sidewalk capital.
-
-**Use cases**
-1. Stop → job: see safe vs. default route, pick the safe one.
-2. Tune priorities (slider / `night` / `accessible`) and watch the route adapt.
-3. Encounter a missing sidewalk → report it → it appears live for others and on the planner dashboard.
-
-## 5. Solution overview
-
-**Reframe:** the last mile is a *walkability* problem; walking is the only free, universal, no-app/no-bank first/last-mile mode, so making the walk safe restores access for the people most excluded.
-
-**Positioning line:** *"MARTA fixed the bus. We fix the part they can't — the walk to it. And where there's no safe walk, we hand the city the map."*
-
-**User flow:** pick stop + destination → backend fetches candidate walking routes → scores each against pre-baked safety data → returns the safest (green) + the default (red), colored per-segment → rider tunes weights/profile → optionally reports a gap → gap appears live on the map and the dashboard.
-
-## 6. System architecture
+## 5. System architecture
 
 ```
- Browser — Next.js + Mapbox GL JS                         (Vercel)
-   │  geocode address · "draw this route" · report a gap
+ Browser — Next.js 15 + React 19 + MapLibre GL JS                       (Vercel)
+   │  geocode (Mapbox optional → OSM Nominatim) · "draw this route" · upload photo
+   │  Supabase realtime subscription → live gap pins
    ▼
- FastAPI + Shapely/GeoPandas                       (Render/Railway, Docker)
-   │  1) Mapbox Directions  → default + alternative walking routes   ← WRAPPER
-   │  2) snap routes to pre-scored segments, apply weights/profile    ← OUR VALUE
-   │  3) return safest + per-segment risk as GeoJSON
+ FastAPI + Shapely/GeoPandas                                            (Render, Docker)
+   │  GET  /route          → Dijkstra over scored graph (safe + fast paths)
+   │  POST /score          → Mapbox Directions wrapper, rank alternatives
+   │  POST /analyze-gap    → Gemini vision verdict, no DB write
+   │  POST /submit-gap     → re-verify + upload photo + insert row
+   │  GET  /gap-reports    → list pins (newest first)
+   │  PATCH /gap-reports/{id} → workflow status update
+   │  GET  /segment/{id}   → per-factor breakdown for one segment
    ▼
- scored_segments.parquet   +   Supabase / PostGIS (gap_reports, realtime)
-   ▲ built offline by prebake.py
+ outputs/scored_segments.parquet   +   Supabase / PostGIS (gap_reports, realtime, gap-photos bucket)
+   ▲ built offline by scripts/prebake.py
+   ▲ baked into the Docker image at build time
 ```
 
-**Component responsibilities**
-- **Frontend + Pitch (R1):** all UI — map, route layers, sliders/profile toggle, comparison panel, gap-report UI, realtime dashboard; Vercel deploy; deck/demo/offline-cache/QA.
-- **Backend + Scoring (R2):** `/score`, the Mapbox Directions wrapper, route→segment snap, weighted scoring, profiles + hard-avoids, explanation strings; container deploy.
-- **Data — Network & Pipeline (R3):** corridor + bbox, OSM network build, the `prebake.py` orchestrator, and the `sidewalk`/`traffic`/`crossing`/`slope` factor modules → `scored_segments.parquet`.
-- **Data — Hazards, Environment & Supabase (R4):** the `crash`/`hazards`/`canopy`/`exposure`/`flooding` factor modules; Supabase `gap_reports` schema + seed + realtime.
+The base map and geocoding are off-the-shelf. The original code is (a) the multi-factor scoring layer (`backend/layers/`), (b) the slider→sub-weight model (`backend/app/scoring.py`), (c) the safety-weighted Dijkstra over our own graph (`backend/app/network.py`), and (d) the AI-gated photo pipeline (`backend/app/gap_reports.py`).
 
-**The Smart-Wrapper principle:** the base map, geocoding, and routing are off-the-shelf API calls. Our entire original contribution is step 2 — ranking the routes Mapbox already returns by a safety metric it doesn't have. Don't build a routing engine.
+**Deployment topology:** frontend on Vercel; FastAPI in a `python:3.12-slim` Docker image on Render, with the scored parquet baked into the image at build time (`COPY outputs/scored_segments.parquet …`); Supabase managed Postgres + Storage + Realtime.
 
-**Deployment topology:** frontend on Vercel; FastAPI in a `python:3.12-slim` Docker container on Render/Railway/Fly (GeoPandas/rasterio's compiled deps are painful in serverless); Supabase managed Postgres.
+## 6. Detailed design
 
-## 7. Detailed design
+### 6a. Frontend
 
-### 7a. Frontend
-- **Stack:** Next.js + TypeScript, **Mapbox GL JS** (map face), **Mapbox Directions + Geocoding** (wrapper APIs), Tailwind + shadcn/ui. Zero-billing fallback: MapLibre GL JS.
-- **Components:**
-  - `MapView` — base map on corridor, stop + destination markers, route layers (safe/default), per-segment risk coloring via data-driven line styling.
-  - `RoutePanel` — default vs. safe comparison: distance, minutes, % no-sidewalk, % shaded, plain-language reason.
-  - `WeightControls` — the factor sliders + `day`/`night`/`accessible` profile toggle → re-calls `/score`, re-renders. **The hero interaction.**
-  - `GapReport` — "Report a gap" → tap location → `INSERT` into Supabase *(R1 UI, writing to R4's `gap_reports` table)*.
-  - `Dashboard` — realtime gap pins + heatmap; the "city deliverable" view.
-- **Client module** `api/` — typed calls to `/score` and Supabase; runs against a **mock `/score` JSON** until the backend is live.
-- **Polish:** mobile-responsive, loading/empty/error states (Polish = 25%).
+Next.js 15 (App Router) + React 19 + TypeScript. **MapLibre GL JS** with OpenFreeMap's `liberty` style — not Mapbox GL. `@supabase/supabase-js` for the realtime channel. `framer-motion` and `lucide-react` for UI polish.
 
-### 7b. Backend API
+**Mapbox is optional**, used only for richer geocoding autocomplete. When `NEXT_PUBLIC_MAPBOX_TOKEN` is unset, autocomplete and reverse-geocode fall back to OSM Nominatim. The base map never needs a Mapbox token.
 
-`POST /score`
+**Pages**
+- `/` — Map + sliders + route comparison.
+- `/report` — Submit a gap: photo upload → `POST /analyze-gap` (Gemini gate) → confirm category → `POST /submit-gap`.
+- `/status` — Live workflow dashboard for the reports table. Realtime INSERT/UPDATE events keep it in sync.
+- `/about` — Problem + solution narrative.
 
+**Key components**
+- `RealMap` (`app/components/RealMap.tsx`) — base map, start/end markers, gradient route layer (score 0..100 → red→amber→green), gap pin markers with popups, optional sidewalk-quality overlay proxied through `/api/sidewalks`.
+- `PreferencePanel` (in `app/page.tsx`) — 3 sliders (5-dot snap) + wheelchair-accessible toggle.
+- `RoutesPanel` — safe vs. default route comparison cards.
+- `MapboxAutocomplete` — geocoding suggestions with the Nominatim fallback.
+
+**Slider scale:** each slider has 5 discrete dots that map to 0/25/50/75/100 on the wire. The theme toggle re-applies theme defaults (light `1/2/1`, dark `0/3/1`) so the dark-mode behavior is not a no-op after a slider drag.
+
+**Auto-rerun:** any slider / theme / wheelchair-toggle change triggers a `GET /route` after a 750 ms debounce.
+
+**Off-corridor fallback:** if `GET /route` 404s, the frontend silently falls back to OSRM's public foot router and renders a single neutral-colored line.
+
+### 6b. Backend API
+
+All handlers live in `backend/app/routes.py`. Geo-CPU work runs in sync handlers so FastAPI puts it in a threadpool rather than blocking the event loop.
+
+#### `GET /health` → `{"status": "ok"}`
+
+#### `GET /route` — primary routing endpoint
+Dijkstra over the prebaked walkable graph. Returns both the safety-weighted path and the shortest path.
+
+Query params:
+- `origin_lat`, `origin_lng`, `dest_lat`, `dest_lng` — required floats.
+- `sidewalks`, `safety`, `comfort` — optional ints `[0, 100]`. Theme defaults fill any omitted slider.
+- `step_free` — bool. When true, segments with `barrier == True` get `risk = inf` and the safe Dijkstra avoids them.
+- `theme` — `"light"` (day defaults) or `"dark"` (night defaults).
+
+Response:
 ```jsonc
-// request
 {
-  "origin": [-84.40, 33.69],            // [lon, lat] — a MARTA stop
-  "dest":   [-84.35, 33.71],            // [lon, lat] — destination
-  "weights": { "sidewalk":0.5, "traffic":0.2, "crash":0.2, "hazards":0.1 },  // optional
-  "profile": "night"                    // optional; "day"|"night"|"accessible"; ignored if weights present
-}
-// response
-{
-  "safest": { "score": 0.18, "minutes": 14.2, "geojson": { /* FeatureCollection, per-segment risk */ } },
-  "alternatives": [ { "score": 0.41, "minutes": 12.0, "geojson": {…} }, … ]
+  "safe_route": {
+    "segments": [{ "segment_id": "...", "risk": 0.21, "display_score": 79, "sidewalk_cov": ..., "length_m": ..., "geometry": {...} }, ...],
+    "total_risk": 0.21,
+    "distance_m": 1342.8,
+    "explanation": "This route prioritizes lower exposure to fast, high-volume traffic. About 64% of the path has sidewalk coverage.",
+    "slider_weights": { "sidewalks": 30, "safety": 55, "comfort": 15 }
+  },
+  "fast_route": {
+    "segments": [...],
+    "distance_m": 1180.4,
+    "slider_weights": { "sidewalks": 0, "safety": 0, "comfort": 0 }
+  }
 }
 ```
 
-`GET /health` → `{"status":"ok"}`. CORS enabled for the Vercel origin.
+Origins or destinations more than `SNAP_MAX_M = 300 m` from the walkable network return `404` — the frontend reads that as "off corridor" and falls back to OSRM.
 
-**Concurrency:** handlers that call Shapely/GeoPandas are declared `def` (not `async def`) so FastAPI runs them in a threadpool and CPU-bound geo work never blocks the event loop.
+#### `POST /score` — Mapbox Directions wrapper
+Body:
+```jsonc
+{
+  "origin": [-84.347, 33.610],
+  "dest":   [-84.329, 33.620],
+  "sidewalks": 50, "safety": 80, "comfort": 20,
+  "step_free": false,
+  "theme": "light"
+}
+```
+Fetches `default + alternatives` from Mapbox Directions (`mapbox/walking`), snaps each candidate to the pre-scored segments, scores them, sorts by score (lower = safer), returns `safest` + `alternatives`. Without a `MAPBOX_ACCESS_TOKEN`, the wrapper synthesizes a straight-line and an offset alternative.
 
-### 7c. Scoring model
+#### `GET /gap-reports`, `POST /gap-reports`, `PATCH /gap-reports/{id}`
+List (newest first), create without photo, update workflow status. PATCH body is `{"status": "reported" | "in_progress" | "processed"}`.
 
-Per-segment weighted sum of normalized (0–1) factors; route score = mean of segment risk; lowest score wins.
+#### `POST /analyze-gap` (multipart)
+Step 1 of the photo flow. Photo → Gemini with a structured-output schema (`is_gap`, `type`, `note`, `confidence`). No DB write. Returns `{verified: true, type, note, confidence}` or `{verified: false, reason, ai_type, confidence}`.
 
-| Weight key | Parquet column | Meaning (1 = …) | Risk term |
-|---|---|---|---|
-| `sidewalk` | `sidewalk_cov` | sidewalk present | `w·(1 − sidewalk_cov)` |
-| `traffic` | `traffic_risk` | dangerous road *(class + speed + AADT volume)* | `w·traffic_risk` |
-| `crash` | `crash_norm` | crash hotspot / on HIN | `w·crash_norm` |
-| `hazards` | `hazard_norm` | nearest hazard, distance-decayed × type weight | `w·hazard_norm` |
-| `shade` | `canopy_pct` | fully shaded | `w·(1 − canopy_pct)` |
-| `exposure` | `exposure_norm` | high heat / pollution exposure | `w·exposure_norm` |
-| `slope` *(Tier 2)* | `slope_risk` | steep grade | `w·slope_risk` |
+#### `POST /submit-gap` (multipart)
+Step 2. Re-runs the Gemini verification server-side (so a client can't bypass `/analyze-gap`), uploads the photo to `gap-photos`, and inserts a row with the user-chosen category and `status='reported'`. The realtime publication pushes the new pin.
 
-- **Two data-enrichment signals fold into existing columns, not new sliders:** vehicle **volume (GDOT AADT)** enriches `traffic_risk`; crossing **signalization + lane/width** enriches the crossing penalty (below).
-- **Non-linearity inside factor columns:** severity isn't linear, so the modules aren't either. `traffic_risk` weights AADT non-linearly (saturates at ≥30k AADT; sub-5k arterials contribute near-zero) and `maxspeed` step-wise at the 35/45 mph breaks. `slope_risk` ramps linearly 5%→0, 8.33%→1 today; the `accessible` profile may ramp earlier (3%→0, 6.25%→1). These curves live inside the factor modules — not as user sliders.
-- **`hazards`** = the *union* of [SeeClickFix Open311](https://seeclickfix.com/open311/v2/requests.json?lat=33.749&long=-84.388) physical-hazard reports (broken sidewalk, streetlight-out, obstruction) **and** our own crowdsourced `gap_reports`. Per-segment score = **`max(type_weight × (1 − distance/20m))`** across hazards within 20 m — `broken_sidewalk`/`obstruction` weight 1.0, `no_sidewalk` 0.9, `no_crossing` 0.8, `streetlight_out` 0.4, other 0.5 (table in Appendix B). **Max-not-sum** keeps it a point penalty, never complaint density (§9).
-- **`exposure`** = heat (NIHHIS-CAPA Atlanta raster) + optional pollution (EJScreen traffic-proximity); doubles as the sustainability/Impact slider in the demo.
-- **Weight resolution:** weights are relative; the backend clamps negatives, ignores unknown keys, and **normalizes to sum 1** (falls back to defaults if all zero). See Appendix A.
-- **Profiles** (7 keys, see Appendix A): `day` (balanced), `night` (boost crash + traffic + hazards, drop shade/exposure), `accessible` (boost sidewalk + slope; hard-avoids on). `profile` selects a preset; explicit `weights` win.
-- **Crossings:** a **fixed per-node penalty** at crossings, scaled by **road width/lanes and lack of signalization** (wide unsignalized crossings are a top death cause) and ×~2.5 in `accessible`; not a user weight.
-- **Hard-avoids (accessible only):** segments with `highway=steps`, `wheelchair=no`, or grade > 10% get `risk = inf` so route selection skips any path containing them — accessibility barriers are *constraints*, not preferences.
+#### `POST /verify-gap` (multipart)
+Back-compat single-step variant that uses Gemini's own classification when the caller doesn't supply one.
 
-### 7d. Data pipeline (`prebake.py`, offline)
+#### `GET /segment/{segment_id}`
+Per-factor breakdown for a single segment.
 
-Run once to produce `scored_segments.parquet`; request-time work is then a cheap spatial snap, not heavy geo computation.
+**Confidence floor:** `analyze_gap_photo` rejects with `confidence < 0.55` even when Gemini says `is_gap=true`, so a low-confidence guess can't become a pin.
 
-1. Build the walk network for the corridor from OSM (Overpass), `segmentize` to ~25 m pieces.
-2. Attach normalized 0–1 columns:
-   - `sidewalk_cov` ← OSM `sidewalk`/`footway` + ARC sidewalk layer.
-   - `traffic_risk` ← OSM `highway` class + `maxspeed` (else class default) + **GDOT AADT** snapped from count stations, with **non-linear AADT weighting** (≥30k saturates at 1, sub-5k near-zero) and step-wise speed weighting at the 35/45 mph breaks.
-   - `crash_norm` ← ATLDOT HIN / GDOT crash density, min-max scaled (FARS as severity overlay).
-   - `hazard_norm` ← **SeeClickFix Open311 physical-hazard points ∪ `gap_reports`**, scored as **`max(type_weight × (1 − distance/20m))`** over hazards within 20 m (max-not-sum keeps it a point penalty, not density — §9).
-   - `canopy_pct` ← Meta/WRI 1 m canopy-height zonal stats, threshold ≥3 m (optional NAIP NDVI > 0.3 refine).
-   - `exposure_norm` ← **NIHHIS-CAPA Atlanta heat raster** zonal mean (+ optional **EJScreen** block-group traffic-proximity), normalized.
-   - `slope_risk` ← DEM grade, normalized 5%→0, 8.33%→1 (the `accessible` profile may apply an earlier 3%→0, 6.25%→1 ramp); grade > 10% → barrier flag.
-   - `crossing` / `barrier` flags ← OSM `crossing` + `traffic_signals` + `lanes`/`width`, `kerb`, `wheelchair`, `steps`.
-3. **CRS:** reproject to **UTM 16N (EPSG:32616, metres)** for all buffers/distances; store/serve geometry in **WGS84 (4326)**.
-4. **Null handling:** missing `canopy_pct` → 0 (or corridor mean); missing `maxspeed`/AADT → road-class default; **no reported hazard → `hazard_norm` = 0** (silence ≠ danger, and ≠ safety); missing `exposure` → corridor mean; missing `kerb`/`wheelchair` → **unknown, not "no ramp"** (don't over-block). Document the method (judges + §8 ask).
-5. Write GeoParquet; build `gdf.sindex` at backend startup.
+### 6c. Scoring model
 
-### 7e. Storage (Supabase / PostGIS)
+**3 sliders + 1 toggle + 1 theme.** All ranges are `[0, 100]`. Light/dark theme picks default slider values; user-adjusted sliders override.
+
+```python
+SLIDER_DEFAULTS = {
+    "light": {"sidewalks": 30, "safety": 55, "comfort": 15},
+    "dark":  {"sidewalks": 20, "safety": 70, "comfort": 10},
+}
+
+SUBWEIGHTS = {
+    "sidewalks": {"sidewalk":  1.00},
+    "safety":    {"traffic":   0.65, "crash":    0.20, "hazards": 0.10, "flooding": 0.05},
+    "comfort":   {"shade":     0.40, "exposure": 0.25, "slope":   0.35},
+}
+```
+
+> **Note on `safety` sub-weights.** The original allocation was 40/35/15/10. The baked corridor has very sparse `crash_norm`, `hazard_norm`, and `flooding` (>99% of segments are 0). With those weights, dragging `safety` higher lowered mean risk less than dragging `sidewalks` higher, which made the slider feel broken. Rebalancing to 65/20/10/5 puts the responsive variable (`traffic_risk`) in the driver's seat. The other three remain non-zero so they re-engage as data coverage broadens.
+
+**Per-segment risk** (`app/scoring.py:segment_risk`):
+
+```python
+risk = (
+    w["sidewalk"] * (1 - sidewalk_cov)
+  + w["traffic"]  * traffic_risk
+  + w["crash"]    * crash_norm
+  + w["hazards"]  * hazard_norm
+  + w["shade"]    * (1 - canopy_pct)
+  + w["exposure"] * exposure_norm
+  + w["slope"]    * slope_risk
+  + w["flooding"] * flooding
+  + crossing_penalty
+)
+risk = clip(risk, 0.0, 1.0)
+```
+
+`crossing_penalty` is a flat, pre-computed per-segment value (`[0.0, 0.225]`, scaled by lanes/signalization) added *outside* the weighted sum; when `step_free=True` it's multiplied by **2.5**.
+
+**Hard-avoids** (`step_free=True`): `risk = float("inf")` when a segment's `barrier` flag is set (steps OR `wheelchair=no` OR grade > 10%). The safe Dijkstra treats `inf` as `1e12`; mean-risk reporting excludes infinite-risk segments.
+
+**Route score** = mean over segment risks (excluding hard-avoids). **Display score** = `round((1 − risk) × 100)` per segment — drives the gradient color ramp.
+
+**Explanation builder** totals each factor's contribution along the route, picks the dominant one, and emits a one-line plain-language reason plus the sidewalk-coverage percentage.
+
+### 6d. Data pipeline (`scripts/prebake.py`)
+
+Run once to produce `outputs/scored_segments.parquet`; request-time work is then a cheap spatial snap and a graph cost-update.
+
+1. **Walk-network build** (`network/build.py`):
+   - Read cached Overpass JSON from `data/osm/<corridor>.json`.
+   - Parse into ways + nodes; filter to walk-eligible `highway` classes.
+   - `segmentize_edges` cuts ways into ~25 m pieces; tail pieces under 3 m get merged.
+   - `node_segments` splits each piece at intersections so junctions become *shared endpoints* — without this the graph shatters into thousands of islands.
+   - `explode_tags` flattens the OSM `tags` dict into typed columns.
+
+2. **Factor modules** (each emits a clean `[0, 1]` Series indexed by `segment_id`; failures fall back to the documented null default and a warning is recorded in the sidecar):
+
+   | Column | Module | Source | Method |
+   |---|---|---|---|
+   | `sidewalk_cov` | `layers/sidewalk.py` | OSM tags + ARC Clayton sidewalk geometry (6 m buffer union in EPSG:32616) | OSM=yes → 0.6 + 0.4·arc_frac; OSM=no → 0.5·arc_frac; unknown → arc_frac. Short segments (<8 m) fall back to OSM only. |
+   | `traffic_risk` | `layers/traffic.py` | OSM `highway` class + `maxspeed` + GDOT AADT (`data/gdot/aadt_2017.geojson`, snapped to ways within 50 m, propagated by `osm_way_id`) | 0.40·class + 0.30·speed (step at 35/45 mph) + 0.30·AADT sigmoid (cap 0.80, midpoint 22.5k). |
+   | `crash_norm` | `layers/crash.py` | GDOT statewide pedestrian crashes 2020–24 (Clayton County filter) | KABCO-weighted count within 30 m of each segment, min-max normalized. |
+   | `hazard_norm` | `layers/hazards.py` | Atlanta 311 sidewalk reports **∪** live Supabase `gap_reports` | `max(type_weight × (1 − dist_m/20))` over hazards within 20 m. Max-not-sum — point penalty, not density. **ATL311 is empty for this corridor**; `gap_reports` is the operative source. |
+   | `canopy_pct` | `layers/canopy.py` | Meta/WRI `cover5m` 10° COG tiles via S3 (keyless) | Sample nearest pixel at each segment's representative point; ÷1000 to `[0, 1]`. |
+   | `exposure_norm` | `layers/exposure.py` | OpenMeteo ERA5 archive API (keyless) | Mean summer (Jun–Aug 2024) daily-max temperature at the corridor centroid, normalized to `[28°C → 0, 40°C → 1]`. ERA5's ~25 km grid is coarser than the corridor, so the base score is uniform; the orchestrator modulates by `(1 − canopy_pct)` so shaded segments score lower exposure. Fallback (API unreachable) = 0.65, not 0. |
+   | `slope_risk` | `layers/slope.py` | USGS 3DEP 1/3 arc-sec DEM via S3 (keyless) | Endpoint elevations from the COG; grade = |Δz| / run. Linear ramp 5%→0, 8.33%→1. Grade > 10% sets `barrier=True`. |
+   | `crossing_penalty` | `layers/crossing.py` | OSM `highway=crossing` + `traffic_signals` nodes | Buffer-intersect with segments → flat `base × width_factor × signalization_factor` ∈ `[0, 0.225]`. |
+   | `flooding` | `layers/flooding.py` | FEMA NFHL REST API (`MapServer/28`, `SFHA_TF='T'`) | 1.0 if a segment intersects a Special Flood Hazard Area, else 0.0. |
+
+3. **Post-processing:** `apply_exposure_shade` modulates uniform heat by canopy; `merge_barriers` ORs `crossing.barrier` and `slope.barrier` into a single `barrier` column; `coerce_numeric` converts OSM `lanes`/`maxspeed`/`width` strings to floats.
+
+4. **CRS:** all buffers/distances run in **UTM 16N (EPSG:32616)**; storage/serve geometry stays in **WGS84 (4326)**.
+
+5. **Null handling:** missing canopy → 0 (unknown shade ≠ shaded). Missing `maxspeed`/AADT → road-class default. No hazard within 20 m → `hazard_norm = 0` (silence ≠ danger). Exposure API down → 0.65. Missing DEM → slope_risk = 0 + `barrier=False`.
+
+6. **Validation:** strict NaN assertion on every factor column. Sidecar JSON records per-column stats, OSM-cache SHA256, git HEAD, R4 module failures, and canary warnings for any column with only one distinct value (excluding `flooding` + `exposure_norm`, which are legitimately uniform).
+
+7. **Atomic write:** tmpfile in the target's directory → `os.replace` into place.
+
+**Current baked corridor stats** (from the committed sidecar): 30,723 segments; `sidewalk_cov` mean 0.111 / 1,713 distinct; `traffic_risk` mean 0.210 / 53 distinct; `slope_risk` mean 0.087; `canopy_pct` mean 0.148; `flooding` covers 1.5% of segments.
+
+### 6e. Storage (Supabase / PostGIS)
+
+`backend/supabase/schema.sql` (reconciled by `migrations/0001_…sql`; status workflow added in `migrations/0002_…sql`):
 
 ```sql
-create table gap_reports (
-  id          bigint generated always as identity primary key,
-  geom        geometry(Point, 4326) not null,
-  type        text not null,                  -- 'no_sidewalk' | 'no_crossing' | 'obstruction' | …
-  note        text,
-  photo_url   text,
-  created_at  timestamptz not null default now()
+create table public.gap_reports (
+    id          uuid primary key default gen_random_uuid(),
+    geom        geography(Point, 4326) not null,
+    type        text not null check (type in (
+                    'broken_sidewalk','no_sidewalk','no_crossing',
+                    'obstruction','streetlight_out','other'
+                )),
+    note        text,
+    photo_url   text,
+    reported_at timestamptz not null default now(),
+    status      text not null default 'reported'
+                  check (status in ('reported','in_progress','processed')),
+    lng         double precision generated always as (st_x(geom::geometry)) stored,
+    lat         double precision generated always as (st_y(geom::geometry)) stored
 );
-create index gap_reports_geom_gix on gap_reports using gist (geom);
--- RLS: allow anon INSERT + SELECT (demo); enable realtime publication on the table.
+create index gap_reports_geom_idx on public.gap_reports using gist (geom);
+
+-- RLS: anon can SELECT and INSERT (demo). Realtime publication is on.
+-- Public Storage bucket `gap-photos` holds verified photos; the backend uploads
+-- with the service-role key, so RLS doesn't gate the insert path in practice.
 ```
 
-**Realtime flow:** frontend `INSERT`s a report through the auto-generated Supabase API and subscribes to the table's realtime channel → new pins appear live on every open map (a strong crowdsourcing demo moment). Backend can `read_postgis()` reports straight into a GeoDataFrame to feed the `hazards` factor.
+**Generated `lng` / `lat` columns** appear in realtime INSERT payloads, so a freshly inserted pin can be drawn without a follow-up read.
 
-### 7f. Factor catalog
+**Realtime flow:** the FastAPI backend (not the browser) inserts into `gap_reports`; the realtime publication pushes the row to every browser subscribed via `getSupabase().channel("gap_reports_live")`. Status changes propagate as UPDATE events.
 
-Every safety signal in one place. **Status:** Core = ship for sure · Stretch = if time · Supplementary = nice-to-have · Rejected = excluded on principle (see §9).
+**Hazards loop:** `layers/hazards.py` reads `gap_reports` directly from Supabase at bake time. Confirmed pins feed the next bake's `hazard_norm`.
 
-| Factor | Role | Data source | Granularity | Status | Bias risk |
-|---|---|---|---|---|---|
-| Sidewalk presence | `sidewalk` weight | OSM `sidewalk`/`footway` + ARC | per-segment | **Core** | Low |
-| Traffic danger | `traffic` weight | OSM `highway`/`maxspeed` **+ GDOT AADT** | per-segment (AADT arterial-only) | **Core** | Low |
-| Crash history | `crash` weight | ATLDOT HIN / GDOT / NHTSA FARS | point → segment | **Core** | Low |
-| Reported hazards | `hazards` weight | SeeClickFix Open311 ∪ `gap_reports` | point → segment | **Core** | Low–Med\* |
-| Crossings | fixed node penalty | OSM `crossing`/`traffic_signals`/`lanes` | node | **Core** | Low |
-| Shade | `shade` weight | Meta/WRI 1 m canopy height (NAIP refine) | 1 m raster → segment | **Stretch** | Low |
-| Heat / pollution | `exposure` weight | NIHHIS-CAPA heat (+ EJScreen pollution) | raster / block-group | **Stretch** | Low–Med\* |
-| Slope | `slope` weight (Tier 2) | USGS 3DEP / Mapbox Terrain DEM | DEM → segment | **Stretch** (accessible) | Low |
-| Hard-avoids | constraint (accessible) | OSM `steps`/`wheelchair` + DEM grade > 10% | segment / node | **Accessible mode** | Low |
-| Flooding | not yet wired | FEMA NFHL + ARC Floodplains | polygon | **Stretch** | Low |
-| Lighting | not yet wired | VIIRS / OSM `street_lamp` | ~500 m / point | **Supplementary** | Med\* |
-| Crime | — | APD open data | point | **Rejected** | High |
-| Land use / CPTED | — | parcels / zoning / OSM | parcel | **Rejected** | High |
-| Vacant / blight | — | Accela / county assessor | address | **Rejected** | High |
-| Noise | — | BTS National Noise Map | 30 m raster | **Rejected** (redundant w/ traffic) | Low |
+### 6f. Factor catalog
 
-\* Bias-mitigated per §9 (hazards scored as points-not-density; lighting/pollution normalized within-neighborhood).
-
-## 8. Data sources & licensing
-
-| Factor / use | Source | Format / access | Notes & flags |
+| Factor | Role | Source | Status in current parquet |
 |---|---|---|---|
-| Stops / network | [MARTA GTFS + GTFS-RT](https://itsmarta.com/app-developer-resources.aspx) | zip + protobuf, **keyless** | Confirmed public |
-| Sidewalks/roads/crossings/barriers | [OSM via Overpass](https://wiki.openstreetmap.org/wiki/Overpass_API) + [ARC hub](https://opendata.atlantaregional.com/) | GeoJSON | `highway` complete; `maxspeed`~40%, `kerb`/`wheelchair` **sparse** — cache once |
-| Crashes | [ATLDOT Vision Zero HIN](https://atldot.atlantaga.gov/programs/vision-zero); GDOT Numetric; [NHTSA FARS API](https://crashviewer.nhtsa.dot.gov/CrashAPI) | dashboard / CSV / API | **HIN downloadable geometry UNVERIFIED** — dig ArcGIS REST; FARS = fatalities only |
-| Shade | [Meta/WRI 1 m Canopy Height](https://registry.opendata.aws/dataforgood-fb-forests/) ([GEE](https://gee-community-catalog.org/projects/meta_trees/)) | COG / GEE, CC BY 4.0 | Height (not NDVI); ~2.8 m MAE, static 2018–2020. **GT Atlanta canopy is NOT public** |
-| Shade refine *(opt)* | NAIP 0.6 m (USDA, `USDA/NAIP/DOQQ`) | GEE / ImageServer | 4-band NIR → NDVI |
-| Slope *(Tier 2)* | USGS 3DEP / Mapbox Terrain-RGB | DEM raster | Gap-free; the dependable a11y signal |
-| Traffic volume (→ `traffic_risk`) | [GDOT TADA](https://www.dot.ga.gov/GDOT/Pages/RoadTrafficData.aspx) / [ARC mirror](https://opendata.atlantaregional.com/datasets/c9ce7fe9c5f94f338422e4d5c7119158_0/about) | shapefile / GeoJSON | Point-station → snap to segments; clean mirror is 2008–2017, arterials only |
-| Reported hazards (`hazards`) | [SeeClickFix Open311](https://seeclickfix.com/open311/v2/requests.json?lat=33.749&long=-84.388) ✅ live | JSON | Union with our `gap_reports`; participation bias → use as points, not density |
-| Heat (`exposure`) | [NIHHIS-CAPA Atlanta](https://noaa.hub.arcgis.com/maps/b6c4c54a585d4a1ebe23d4599eec7cc2) | GeoTIFF / CSV, **keyless** | Street-relevant; single-day snapshot — **verify campaign year** |
-| Pollution *(opt, `exposure`)* | [EJScreen v2.3 — Harvard Dataverse mirror](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/RLR5AX) | CSV / GDB | Block-group coarse; **EPA removed it Feb 2025 — cite the mirror, not epa.gov** |
-| Flooding *(stretch)* | [FEMA NFHL REST](https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer) + [ARC Floodplains](https://opendata.atlantaregional.com/datasets/b415a26bc2254341924d9f43f8056f16) | REST / polygon | Intersect segments; NFHL misses urban flash flooding |
-| Lighting *(supplementary)* | VIIRS nighttime / OSM `street_lamp` | raster / GeoJSON | **No real Atlanta inventory exists**; ~500 m proxy — normalize within-neighborhood |
-| Context | Census ACS B08201/B08301, LODES | API / CSV | For the "who's affected" framing |
+| Sidewalk presence | `sidewalks` slider | OSM + ARC Clayton sidewalks | mean 0.11, 1.7k distinct values |
+| Traffic danger | `safety` (×0.65) | OSM class + maxspeed + GDOT AADT 2017 | mean 0.21, sole responsive safety factor on the demo corridor |
+| Crash history | `safety` (×0.20) | GDOT pedestrian crashes 2020–24 (Clayton filter) | sparse — mean 0.003 |
+| Reported hazards | `safety` (×0.10) | ATL311 ∪ Supabase `gap_reports` | sparse — ATL311 empty in Clayton; `gap_reports` is the live driver |
+| Crossings | flat per-segment penalty | OSM `crossing` / `traffic_signals` nodes + lanes | shipped |
+| Shade | `comfort` (×0.40) | Meta/WRI canopy-height COG | mean 0.15 |
+| Heat | `comfort` (×0.25) | OpenMeteo ERA5 summer mean max temp | uniform pre-modulation, varied post-canopy |
+| Slope | `comfort` (×0.35) | USGS 3DEP DEM | mean 0.09, 3.5k distinct values |
+| Hard-avoids | `step_free` constraint | OSM `steps`/`wheelchair=no` + grade > 10% | sets `risk = inf` for the safe Dijkstra |
+| Flooding | `safety` (×0.05) | FEMA NFHL SFHA polygons | 1.5% of segments intersect |
 
-## 9. Ethics & equity
+**Rejected on principle** (see §8): crime, land use / CPTED, vacant / blight, noise.
+
+## 7. Data sources
+
+| Use | Source | Access |
+|---|---|---|
+| Sidewalks (ARC) | ARC Clayton sidewalks (`data/arc/clayton_sidewalks.geojson`) | GeoJSON, cached |
+| Roads / crossings | OpenStreetMap via Overpass | JSON, cached to `data/osm/<corridor>.json` |
+| Traffic volume | GDOT TADA 2008–2017 (`data/gdot/aadt_2017.geojson`) | GeoJSON |
+| Pedestrian crashes | GDOT statewide 2020–24 (`backend/data/Crashes_2020-2024.geojson`) | GeoJSON, Clayton + KABCO filter |
+| Reported hazards | Atlanta 311 GeoJSON + live Supabase `gap_reports` | GeoJSON + Postgres |
+| Sidewalk inventory overlay (display) | City of Atlanta `Sidewalks_Inventory` ArcGIS | proxied via `/api/sidewalks` |
+| Canopy | Meta/WRI `cover5m` v3 | 10° COG tiles on AWS, keyless |
+| Heat | OpenMeteo ERA5 archive | JSON API, keyless |
+| Slope | USGS 3DEP 1/3 arc-sec | 1° COG tiles on AWS, keyless |
+| Flooding | FEMA NFHL REST | ArcGIS REST GeoJSON |
+| Photo verification | Google Gemini (`gemini-2.5-flash` default) | `google-genai` SDK with structured output schema |
+| Storage / realtime | Supabase Postgres + Storage + Realtime | managed |
+| Base map | OpenFreeMap `liberty` style | keyless |
+| Geocoding (autocomplete) | Mapbox (optional) → OSM Nominatim fallback | REST |
+| Walking directions | Mapbox Directions for `POST /score` only | REST |
+| Walking fallback | `router.project-osrm.org/route/v1/foot` | keyless REST |
+
+## 8. Ethics & equity
 
 **Guiding principle — *score the road, not the neighborhood.*** A factor is legitimate only if it measures a **physical hazard at a specific point** that endangers anyone walking there. Factors that measure a **social/area characteristic** are rejected — they penalize neighborhoods for their demographics and quietly reinstate redlining.
 
-**Factors we deliberately rejected, and why** (this is a pitch slide, not a silent omission):
-- **Crime data** — encodes policing bias (over-policed areas show more "crime"); routing low-income Black riders away from their own neighborhoods replicates redlining ([ACLU on Microsoft's "avoid the ghetto" routing](https://www.aclu.org/news/national-security/your-turn-turn-navigation-application-racist)). The [AJPH 2023](https://ajph.aphapublications.org/doi/10.2105/AJPH.2022.307192) redlining/fatality link shows *infrastructure + crash* data captures the real danger without the bias.
-- **Land use / "eyes on the street" (CPTED)** — industrial/vacant land concentrates in historically redlined areas *because of* disinvestment, so scoring it "less safe" reproduces that pattern. Data exists; we don't use it.
-- **Vacant / blighted property** — a discretionary, enforcement-driven label that maps almost exactly onto disinvested Black neighborhoods. Highest bias risk; excluded entirely.
+**Factors deliberately rejected:**
+- **Crime data** — encodes policing bias; routing low-income Black riders away from their own neighborhoods replicates redlining ([ACLU on Microsoft's "avoid the ghetto" routing](https://www.aclu.org/news/national-security/your-turn-turn-navigation-application-racist)). The AJPH 2023 redlining/fatality link shows *infrastructure + crash* data captures the real danger without the bias.
+- **Land use / "eyes on the street" (CPTED)** — industrial/vacant land concentrates in historically redlined areas *because of* disinvestment, so scoring it "less safe" reproduces that pattern.
+- **Vacant / blighted property** — a discretionary, enforcement-driven label that maps almost exactly onto disinvested Black neighborhoods.
 
 **Bias mitigations on the factors we *do* use:**
-- **Reported hazards (311 + our reports):** wealthier areas report more, so we score **specific hazard points as penalties, never complaint density** — a hazard anywhere counts; silence never implies safety.
-- **Lighting / pollution:** normalized **within-neighborhood** (not citywide) so brighter/cleaner affluent corridors don't pull routes toward wealthy areas.
+- **Reported hazards (311 + our reports):** scored as `max(type_weight × (1 − dist/20m))`, not as a density sum — a hazard anywhere counts; silence never implies safety. The Gemini gate is a junk-photo filter, not a content moderator; its job is to reject selfies, screenshots, and food photos so the map stays a sidewalk-hazard map. Confidence floor is `0.55`.
+- **Accessibility:** the `step_free` toggle + `slope` factor + hard-avoids serve mobility-limited riders, who intersect heavily with the low-income transit-dependent population.
 
-**Other equity considerations:**
-- **Digital divide:** the app needs a smartphone — the same barrier we critique in MARTA's app. Acknowledged; SMS/low-bandwidth fallback is roadmap (§16).
-- **Accessibility:** `accessible` profile + slope + hard-avoids serve mobility-limited riders, who intersect heavily with the low-income transit-dependent population.
-
-## 10. Alternatives considered
+## 9. Key design decisions
 
 | Decision | Chosen | Rejected | Why |
 |---|---|---|---|
-| Routing | Smart Wrapper (score Mapbox alternatives) | Build a routing engine | Wrapper is reliable + demoable in 48h; engine is the time-sink trap |
-| Geo backend | FastAPI + Shapely/GeoPandas | Turf.js (Node) | Need raster zonal stats (canopy/heat) + real CRS handling; consolidates language |
-| Storage | Supabase/PostGIS | MongoDB | Native PostGIS + `read_postgis()` matches the geo stack; auto realtime API; instant spatial queries |
-| Shade signal | Meta 1 m canopy **height** | OSM trees / NDVI | OSM too sparse; NDVI conflates grass with trees; height isolates real shade |
-| Corridor | Gillem Logistics | Cumberland/Gwinnett | Those are *reach* gaps (no stop) we can't solve; Gillem is a *walk* gap we can |
+| Routing | (a) Smart wrapper for `/score` + (b) **own Dijkstra over the scored graph** for `/route` | Build a routing engine from scratch | The Dijkstra returns paths Mapbox would never return (the deliberately-safer parallel that adds half a mile) |
+| Frontend map | MapLibre GL JS + OpenFreeMap tiles | Mapbox GL JS | No Mapbox token needed for the map face |
+| Geo backend | FastAPI + Shapely/GeoPandas | Turf.js (Node) | Need raster zonal stats + real CRS handling |
+| Storage | Supabase (Postgres + PostGIS + Realtime + Storage) | MongoDB | Native PostGIS, generated `lng`/`lat` for realtime payloads, free photo bucket |
+| Heat source | OpenMeteo ERA5 | NIHHIS-CAPA Atlanta raster | ERA5 is keyless, current, and modulated by canopy at segment scale |
+| Shade signal | Meta `cover5m` (≥5 m canopy) COG | OSM trees / NDVI | OSM too sparse; NDVI conflates grass with trees |
+| Slope DEM | USGS 3DEP (bare earth) | Copernicus GLO-30 (DSM) / OpenMeteo elevation | GLO-30 includes buildings (impossible grades); OpenMeteo is rate-limited per point |
+| Photo gate | Gemini structured output | Manual moderation queue | Model can decide in <1 s with a clear rejection sentence |
 
-## 11. Demo plan
-
-- **Hero corridor:** Gillem Logistics Center — documented, a MARTA Reach pilot zone, an equity-rich job center, and unambiguously a walkability (not reach) failure.
-- **Scope framing (bbox-parameterized):** `prebake.py` takes a bounding box, so the corridor is config, not hardcode. We bake + ground-truth one corridor for a defensible demo, and pitch the scope as a *choice*: *"We scoped v1 to one corridor so every safety claim is verified. The pipeline is corridor-agnostic — citywide is a bounding-box away. We chose a true demo over a broad, unverifiable one."*
-- **Caveat / backup:** Gillem may lack a *safer parallel path* for the reroute moment (the documented problem is no sidewalk at all). Validate in hour 1; if absent, use Gillem for the **"no safe route → report gap"** beat and a **West Atlanta / Belvedere Park** segment (other Reach zones, denser, more route choice) for the **reroute** beat.
-- **Script:** dangerous default (red) → safe alternative (green) + plain-language reason → drag a slider / switch to `accessible` → route changes live → tap "Report a gap" → pin appears live on the map + dashboard.
-- **Safety net:** pre-cache the corridor's API responses + bundle the GeoJSON so the demo runs **offline**; record a 60-sec backup video.
-
-## 12. Team, roles & contracts
-
-No dedicated integration seat — integration is distributed (each owner deploys their own service; contracts are locked at kickoff). The heaviest role, **Data, is split cleanly into base-network vs. overlay-layers** so all four work in parallel on separate files.
-
-| Role | Owns | Key deliverable |
-|---|---|---|
-| **R1** Frontend + Pitch | **All** UI (map, routes, sliders, comparison, gap-report, dashboard) + Vercel deploy + deck/demo/offline-cache/QA | Deployed demo URL + rehearsed pitch |
-| **R2** Backend + Scoring | FastAPI, `/score`, Directions wrapper, `scoring.py` (snap + weighted sum + profiles + hard-avoids + explanations), container deploy | Live `/score` matching the contract |
-| **R3** Data — Network & Pipeline | Corridor + bbox, OSM network build, `prebake.py` orchestrator, the `sidewalk`/`traffic`/`crossing`/`slope` factor modules | `scored_segments.parquet` (network + those columns) |
-| **R4** Data — Hazards, Env & Supabase | The `crash`/`hazards`/`canopy`/`exposure`/`flooding` factor modules; Supabase `gap_reports` schema + seed + realtime | Overlay columns + live Supabase |
-
-**The clean data split (how R3 & R4 avoid merge conflicts):** each factor is a separate module `layers/<factor>.py` exposing `score(segments) -> Series` (0–1, indexed by `segment_id`). R3 owns the base network + orchestrator + its modules; R4 owns its modules + Supabase. They touch **different files**; `prebake.py` just imports and column-joins on `segment_id`. R4 codes against a small **sample network** R3 publishes in hour 1, so neither blocks the other.
-
-**Lock at kickoff (contracts + corridor):**
-1. `/score` JSON shape *(R2 ↔ R1)*
-2. `scored_segments.parquet` schema + `segment_id` index *(R3 ↔ R2)*
-3. factor-module interface `score(segments) -> Series[0–1]` keyed by `segment_id` *(R3 ↔ R4)*
-4. `gap_reports` schema + Supabase client API *(R4 ↔ R1)*
-5. the hero corridor / bbox *(all)*
-
-**Dependency chain:** `R3 base network → {R4 overlay columns, R2 scoring} → R1 render`. R3 publishes a sample network, R2 ships a **stub parquet**, and R1 builds on **mocks**, so all four start in parallel. Each owner deploys their own service. **R2 is the most bounded role — it floats to help R1 with the dashboard + QA on Day 2.**
-
-## 13. Timeline & milestones
-
-- **Kickoff (1–2h):** scaffold the apps, deploy hello-worlds, **lock contracts + corridor**; R3 publishes the sample network.
-- **Day 1 AM:** R3 de-risks the network (Overpass pull, confirm sidewalk coverage, validate corridor route-choice) + `sidewalk`/`traffic`; R4 stands up Supabase + first overlay modules (`crash`/`hazards`); R2 `/score` on stub parquet; R1 map + mocked route.
-- **Day 1 PM → 🟢 MILESTONE:** **real route, scored + colored, live on the corridor** (the thin slice).
-- **Day 2 AM:** R1 polish + comparison + gap-UI/dashboard; R2 night/accessible profiles + edge cases (then floats to R1); R3 slope + crossing depth + AADT; R4 canopy/heat/(pollution) + seed pins.
-- **Day 2 midday:** 🔒 **feature freeze** → all-hands bug-bash + pre-cache demo offline.
-- **Day 2 PM:** rehearse 2× · submit.
-
-## 14. Risks & mitigations
-
-| Risk | Likelihood | Mitigation |
-|---|---|---|
-| OSM/ARC sidewalk coverage thin at corridor | Med | Validate hour 1; hand-trace the one corridor if needed |
-| Gillem has no safer alternative to reroute | Med | Backup route-choice corridor (West Atlanta/Belvedere) |
-| HIN crash geometry not downloadable | Med | Fall back to GDOT CSV + FARS + road-class proxy |
-| Raster (canopy/heat/slope) skill gap | Med | Hand-tag corridor or use layers as visual overlay only |
-| Too many factors → black-box / slider sprawl | Med | Cap user sliders ~5–6; fold AADT + crossings into existing columns |
-| Scope creep (4 engineers over-build) | High | Cap at MVP; pour surplus into rehearsal + polish |
-| Demo / wifi failure | Med | Offline pre-cache + backup video |
-
-## 15. Success metrics & judging alignment
-
-| Criterion (weight) | How we win it |
-|---|---|
-| **Value (20%)** | Sourced problem (2.6× stat, Gillem), the right-corridor choice, a real rider scenario |
-| **Innovation (25%)** | Multi-factor safety scoring on open data; the deliberate crime-data exclusion **and** principled rejection of bias-prone factors (land use, blight) — "score the road, not the neighborhood" |
-| **Polish (25%)** | Live slider-reroute demo, the comparison panel, shadcn UI, offline-proofed run |
-| **Impact (30%)** | Car-trips-avoided (EPA: transport = largest US GHG), equity framing, the gap map as a Vision Zero/ARC handoff (answers "who sustains it"); the heat + pollution `exposure` factor doubles as a climate-resilience story |
-
-## 16. Future work / roadmap
-
-- **SMS / low-bandwidth fallback** (the "TextTransit" idea) for no-smartphone riders.
-- Multi-corridor → citywide.
-- Promote stretch factors (flooding, lighting) to first-class once data improves (e.g., a public ATLDOT [Light Up the Night](https://atldot.atlantaga.gov/programs/light-up-the-night) streetlight inventory).
-- Full **walk → bus → walk** multimodal chain (OTP), with MARTA Reach pickup points as endpoints.
-- Fold rider-reported gaps back into the scoring weights over time.
-
-## 17. Open questions
-
-1. Is the ATLDOT High-Injury Network downloadable as routable geometry, or dashboard-only?
-2. Does the Gillem corridor have a safer parallel path (decides single- vs. dual-corridor demo)?
-3. Which factors are core vs. stretch? (sidewalk/traffic/crash/hazards = core; shade, exposure, slope, flooding, lighting = optional)
-4. Does Atlanta publish a municipal street-tree inventory (would sidestep the raster work)?
-5. Photo uploads on gap reports — in or out for v1?
-6. Is the EJScreen mirror vintage (~2017) + Harvard Dataverse citation acceptable for the pollution layer?
-7. What is the NIHHIS-CAPA Atlanta heat campaign year, and does it cover the demo corridor?
-8. Current-year GDOT AADT — clean source + the point-station → segment snapping method?
-9. Expose `hazards` and `exposure` as user sliders, or keep them as fixed modifiers to limit slider sprawl?
-
-## Appendix A — weight resolution & scoring (Python)
+## Appendix A — slider model (`backend/app/scoring.py`)
 
 ```python
-FACTORS  = ("sidewalk", "traffic", "crash", "hazards", "shade", "exposure", "slope")
-DEFAULTS = {"sidewalk":0.30, "traffic":0.20, "crash":0.20, "hazards":0.15,
-            "shade":0.10, "exposure":0.05, "slope":0.00}
-PROFILES = {
-    "day":        DEFAULTS,
-    "night":      {"sidewalk":0.20,"traffic":0.25,"crash":0.30,"hazards":0.15,
-                   "shade":0.05,"exposure":0.05,"slope":0.00},   # boost crash+traffic+hazards
-    "accessible": {"sidewalk":0.35,"traffic":0.10,"crash":0.10,"hazards":0.15,
-                   "shade":0.05,"exposure":0.05,"slope":0.20},   # boost sidewalk+slope
+FACTORS = ("sidewalk", "traffic", "crash", "hazards",
+           "shade", "exposure", "slope", "flooding")
+
+SLIDER_DEFAULTS = {
+    "light": {"sidewalks": 30, "safety": 55, "comfort": 15},
+    "dark":  {"sidewalks": 20, "safety": 70, "comfort": 10},
 }
 
-def resolve_weights(weights: dict | None, profile: str | None) -> dict:
-    raw = weights or PROFILES.get(profile or "day", DEFAULTS)
-    raw = {k: max(0.0, float(raw.get(k, 0))) for k in FACTORS}   # clamp, ignore unknowns
-    s = sum(raw.values()) or 1.0
-    return {k: v / s for k, v in raw.items()}                    # normalize to sum 1
+SUBWEIGHTS = {
+    "sidewalks": {"sidewalk":  1.00},
+    "safety":    {"traffic":   0.65, "crash":    0.20, "hazards": 0.10, "flooding": 0.05},
+    "comfort":   {"shade":     0.40, "exposure": 0.25, "slope":   0.35},
+}
 
-def segment_risk(seg, w, profile):
-    if profile == "accessible" and (seg["barrier"] or seg["slope_risk"] is None):
-        return float("inf")                                      # hard-avoid
-    return ( w["sidewalk"] * (1 - seg["sidewalk_cov"])
-           + w["traffic"]  *  seg["traffic_risk"]                # incl. AADT volume
-           + w["crash"]    *  seg["crash_norm"]
-           + w["hazards"]  *  seg["hazard_norm"]                 # 311 ∪ crowdsourced reports
-           + w["shade"]    * (1 - seg["canopy_pct"])
-           + w["exposure"] *  seg["exposure_norm"]               # heat (+ pollution)
-           + w["slope"]    *  (seg["slope_risk"] or 0.0) )       # + crossing penalty at nodes
+def resolve_weights_from_sliders(sidewalks=None, safety=None, comfort=None, theme="light"):
+    d = SLIDER_DEFAULTS[theme]
+    raw = {
+        "sidewalks": float(sidewalks if sidewalks is not None else d["sidewalks"]),
+        "safety":    float(safety    if safety    is not None else d["safety"]),
+        "comfort":   float(comfort   if comfort   is not None else d["comfort"]),
+    }
+    raw = {k: max(0.0, v) for k, v in raw.items()}
+    norm = {k: v / (sum(raw.values()) or 1.0) for k, v in raw.items()}
+    out = {f: 0.0 for f in FACTORS}
+    for slider, sw in norm.items():
+        for factor, sub in SUBWEIGHTS[slider].items():
+            out[factor] += sw * sub
+    return out
+
+def segment_risk(seg, w, step_free=False, crossing_penalty_value=0.0):
+    if step_free and (seg.get("barrier") or seg.get("highway") == "steps"
+                      or seg.get("wheelchair") == "no"):
+        return float("inf")
+    risk = (
+        w["sidewalk"] * (1 - seg["sidewalk_cov"])
+      + w["traffic"]  *  seg["traffic_risk"]
+      + w["crash"]    *  seg["crash_norm"]
+      + w["hazards"]  *  seg["hazard_norm"]
+      + w["shade"]    * (1 - seg["canopy_pct"])
+      + w["exposure"] *  seg["exposure_norm"]
+      + w["slope"]    *  (seg["slope_risk"] or 0.0)
+      + w["flooding"] *  (seg["flooding"] or 0.0)
+      + crossing_penalty_value
+    )
+    return max(0.0, min(1.0, risk))
 ```
 
-## Appendix B — prebake: canopy, slope, hazards & exposure (Python)
+## Appendix B — pipeline pseudocode (`backend/layers/`)
 
 ```python
-import rasterio, pandas as pd, geopandas as gpd
-from rasterstats import zonal_stats
-
-buf = segments.to_crs(32616).buffer(5)   # 5 m sidewalk + overhang buffer per segment
-
-# Shade: % of buffer under ≥3 m canopy (Meta/WRI height tile)
-z = zonal_stats(buf, "data/meta_canopy.tif", stats=["mean"])
-segments["canopy_pct"] = [min(max((s["mean"] or 0) / 6.0, 0), 1) for s in z]  # ~6 m → full
-
-# Slope: grade from a DEM, normalized 5%→0, 8.33%→1; >10% = barrier
-with rasterio.open("data/dem.tif") as dem:
-    for i, seg in segments.iterrows():
-        z0, z1 = [v[0] for v in dem.sample([seg.start, seg.end])]
-        grade = abs(z1 - z0) / seg.length_m
-        segments.at[i, "slope_risk"] = min(max((grade - 0.05) / (0.0833 - 0.05), 0), 1)
-        segments.at[i, "barrier"]    = grade > 0.10
-
-# Hazards: UNION of 311 + gap_reports, scored as max(type_weight × distance_decay).
-# Point penalty (not density), per §9 — wealthier areas report more, so we never count.
+# layers/hazards.py — UNION of ATL311 + Supabase gap_reports.
+# Point penalty (max-not-sum) with distance decay.
 HAZARD_W = {"broken_sidewalk":1.0, "obstruction":1.0, "no_sidewalk":0.9,
             "no_crossing":0.8,    "streetlight_out":0.4, "other":0.5}
-segs_m = segments.to_crs(32616)
-haz    = gpd.GeoDataFrame(pd.concat([open311_hazards, gap_reports]), crs=4326).to_crs(32616)
-haz["w"] = haz["type"].map(HAZARD_W).fillna(HAZARD_W["other"])
-near   = gpd.sjoin_nearest(segs_m[["geometry"]], haz, max_distance=20, distance_col="d")
-near["s"] = near["w"] * (1 - near["d"] / 20).clip(lower=0)
-segments["hazard_norm"] = (near.groupby(level=0)["s"].max()
-                                .reindex(segments.index, fill_value=0.0))
+near = gpd.sjoin_nearest(segs_utm, hazards_utm, max_distance=20, distance_col="d")
+near["s"] = near["weight"] * (1 - near["d"] / 20).clip(lower=0)
+hazard_norm = near.groupby(level=0)["s"].max().reindex(segments.index, fill_value=0.0)
 
-# Exposure: heat (CAPA raster) + optional pollution (EJScreen block-group), 0..1
-zt   = zonal_stats(buf, "data/capa_heat.tif", stats=["mean"])
-heat = normalize([s["mean"] or 0 for s in zt])                       # relative 0..1
-poll = gpd.sjoin(segments, ejscreen_bg[["traffic_prox", "geometry"]], how="left")["traffic_prox"]
-segments["exposure_norm"] = 0.7 * heat + 0.3 * normalize(poll.fillna(poll.mean()))
+# layers/canopy.py — Meta cover5m sampled at each segment's rep point.
+clip = raster.rio.clip_box(*_CLAYTON_BBOX).squeeze(drop=True)
+pts = segments.to_crs(4326).geometry.representative_point()
+canopy_pct = np.clip(clip.sel(x=pts.x, y=pts.y, method="nearest").to_numpy() / 1000.0, 0, 1)
+
+# layers/slope.py — endpoint elevations on USGS 3DEP, |Δz|/run in metres.
+z0 = dem.sel(x=start_x, y=start_y, method="nearest").to_numpy()
+z1 = dem.sel(x=end_x,   y=end_y,   method="nearest").to_numpy()
+grade = np.where(run >= 1.0, np.abs(z1 - z0) / run, 0.0)
+slope_risk = np.clip((grade - 0.05) / (0.0833 - 0.05), 0, 1)
+barrier    = grade > 0.10
+
+# layers/exposure.py — OpenMeteo ERA5 archive, summer 2024 mean daily-max.
+# Uniform across corridor at ERA5 resolution; modulated by canopy post-hoc.
+mean_temp_c = mean(httpx.get(_OPENMETEO_URL).json()["daily"]["temperature_2m_max"])
+exposure_norm = clip((mean_temp_c - 28) / (40 - 28), 0, 1)
+exposure_norm = ((1 - canopy_pct) * exposure_norm).clip(0, 1)  # in prebake.py, after canopy
 ```
-
-## Appendix C — consolidated sources
-MARTA Reach (ATL News 2026) · NextGen (Metro Magazine) · Better Breeze (Urbanize 2026) · AJC 2025 (MARTA/race) · Brookings 2011 · AJPH 2023 (redlining/fatalities) · GT/ARC 2022 + arXiv 2308.02681 (Gillem/Reach) · Streetsblog 2019 (mode share) · Smart Growth America 2023 (I-20) · ACLU ("avoid the ghetto") · EPA transportation GHG · Meta/WRI canopy (AWS/GEE) · MARTA GTFS · ATLDOT Vision Zero / GDOT / NHTSA FARS · USGS 3DEP · GDOT TADA (AADT) · SeeClickFix Open311 (hazards) · NIHHIS-CAPA Atlanta (heat) · EJScreen v2.3 Harvard Dataverse (pollution) · FEMA NFHL + ARC Floodplains (flooding).

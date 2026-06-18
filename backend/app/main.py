@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.data_paths import resolve_parquet_path
 from app.network import GraphRouter
 from app.routes import router
 from app.segment_repository import SegmentRepository
@@ -24,16 +24,14 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     app.state.settings = settings
 
-    parquet_path = resolve_parquet_path(settings.scored_segments_path)
+    parquet_path = Path(settings.scored_segments_path)
     try:
-        if parquet_path is None:
-            raise FileNotFoundError(settings.scored_segments_path)
         app.state.segment_store = SegmentStore.from_parquet(parquet_path)
         logger.info("Segment store ready (%s)", parquet_path)
     except FileNotFoundError:
         logger.warning(
-            "No parquet found (tried %s, sample_network). Run scripts/bootstrap_scored_segments.py",
-            settings.scored_segments_path,
+            "Scored segments not found at %s. Run `python scripts/prebake.py` from the repo root.",
+            parquet_path,
         )
         app.state.segment_store = create_empty_store()
 

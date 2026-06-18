@@ -2,103 +2,129 @@
 
 Safe-walk routing + crowdsourced gap-mapping for MARTA first/last mile. See [DESIGN.md](DESIGN.md) for the engineering spec.
 
-## Inspiration
-MARTA riders in South Atlanta often get dropped a mile or more from work. At Gillem Logistics Center, workers walk 1.5–2 miles along arterials with no sidewalk after getting off the bus. Google Maps gives you the shortest path, not the safest one.
-
-We built Safewalk for that gap: the walk to the stop is still broken even when the bus part works.
-
 ## What it does
-Safewalk routes you on the safest walk between two points (MARTA stop → job, home → store, etc.), not just the fastest. You see a red default route and a green safe route side by side, with per-segment coloring and a short explanation of why they differ.
 
-Three sliders let you weight sidewalks, safety, and comfort. There's a wheelchair toggle that skips stairs and steep grades, and a dark mode that bumps up traffic/crash weight at night. If there's no good path, you can drop a pin to report a missing sidewalk or bad crossing — it shows up live on the map for other riders and planners.
+Safewalk routes you on the safest walk between two points (MARTA stop → job, home → store, etc.), not just the fastest. You see a default route and a safer route side by side, with per-segment safety coloring and a short explanation of why one is better.
 
-## How we built it
-- Next.js + Mapbox on the frontend. FastAPI + GeoPandas on the backend. We don't run our own routing engine — we pull walking routes from Mapbox/OSRM and score them against a pre-baked parquet file where every ~25m street segment already has sidewalk, traffic, crash, hazard, shade, heat, slope, and flood scores.
+Three sliders weight **sidewalks**, **safety**, and **comfort**. A **wheelchair-accessible** toggle hard-avoids stairs, `wheelchair=no` ways, and grades > 10%. A **light/dark theme** toggle doubles as a day/night routing profile — dark mode shifts the slider defaults toward safety.
 
-- A prebake.py pipeline pulls OSM, ARC sidewalk data, GDOT traffic counts, Atlanta crash/311 data, canopy rasters, and heat APIs offline. Gap reports go into Supabase with realtime so new pins appear without a refresh. Four of us split frontend, backend/scoring, network pipeline, and hazard layers and worked off locked API contracts so nobody blocked anyone.
+If there's no good path, users can upload a photo of the gap. The backend runs the photo through Gemini vision; if it confirms a real pedestrian hazard, the pin is uploaded to Supabase and appears live on every open map and the `/status` workflow dashboard.
 
-## Challenges we ran into
-Gillem is a real walkability failure, but a lot of the residential roads on the map are private logistics yards that don't help a worker walking in from the bus. We ended up demoing both rerouting (where a safer parallel exists) and the "no safe route → report it" flow.
+## How it's built
 
-## Accomplishments that we're proud of
-- We shipped a working scored route on a real corridor with 30k+ segments, not a mock. The slider reroute actually changes the path on the map — that's the demo moment.
+- **Frontend (`frontend/`):** Next.js 15 + React 19 + TypeScript. **MapLibre GL JS** rendering OpenFreeMap tiles. Mapbox is optional and only used for geocoding autocomplete (falls back to OSM Nominatim). Supabase JS client for the realtime gap-pin subscription.
 
-- We have a clear rule we stuck to: score the road, not the neighborhood. Crime and land-use factors are out; physical hazards at specific points are in.
+- **Backend (`backend/`):** FastAPI + GeoPandas/Shapely. `GET /route` runs an in-process Dijkstra over the walkable subgraph of `outputs/scored_segments.parquet` (~30k segments). `POST /score` wraps Mapbox Directions and ranks the alternatives it returns against the same scored segments. An OSRM walking fallback in the browser handles OD pairs outside the corridor.
 
-- Gap reporting works end to end — tap, pin appears live, feeds the hazard layer. And we validated the corridor with numbers (17% of arterials with no sidewalk tag) instead of just asserting the problem exists.
+- **Pre-bake pipeline (`scripts/prebake.py`):** pulls OSM via Overpass, the ARC Clayton sidewalk inventory, GDOT 2008–2017 AADT counts, GDOT pedestrian crashes (Clayton filter), Meta/WRI canopy-height COG tiles from S3, USGS 3DEP DEM tiles from S3, OpenMeteo ERA5 summer temperatures, FEMA NFHL flood-zone polygons, and Atlanta 311 sidewalk reports. Each module emits a clean `[0, 1]` Series indexed by `segment_id`; the orchestrator joins them onto the segmentized walk network and writes `outputs/scored_segments.parquet` + a sidecar JSON with per-column stats and canary warnings.
 
-## What we learned
-- You don't need to build a routing engine to add value. Wrapping existing directions and ranking alternatives by safety was the right call for a weekend.
-
-- Pre-baking everything into parquet saved us — request-time scoring is just a spatial snap, and the demo doesn't depend on live raster pulls or flaky Wi-Fi.
-
-- Open data is messy. Sparse tags, biased 311 reports, point-sample traffic counts — you have to document what you don't know and design around it, or your "safe route" is just confident nonsense.
-
-## What's next for Safewalk
-- Expand the bbox to more corridors, then citywide — the pipeline already takes a bounding box, it's mostly a bake-time problem.
-
-- SMS or low-bandwidth fallback for riders without smartphones. Multimodal walk → bus → walk with MARTA stops as endpoints.
-
-- Get the gap heatmap in front of ARC or the city as an actual sidewalk prioritization input, and fold confirmed reports back into the scoring weights over time.
+- **Storage:** Supabase Postgres + PostGIS. `gap_reports` has a 3-stage workflow (`reported → in_progress → processed`), generated `lng`/`lat` columns so realtime INSERT payloads carry plottable coordinates, and a public `gap-photos` Storage bucket. The realtime publication is on, so new pins appear without a refresh.
 
 ## Repo layout
 
 ```
 safewalk/
-├── DESIGN.md              # locked engineering spec (R1)
-├── SCORING.md             # slider model + API reference (gitignored — local working doc)
-├── VALIDATION.md          # corridor-validation receipts + factor spot-checks
-├── corridor.json          # locked corridor bbox + primary destination
-├── network/               # OSM corpus → walk network builder (R3)
+├── DESIGN.md                 # engineering spec
+├── corridor.json             # locked corridor bbox + primary destination (Gillem)
+├── render.yaml               # Render web-service config for the backend
+├── requirements.txt          # Python deps for the prebake pipeline
+├── network/                  # OSM corpus → walk network builder
+│   ├── overpass.py           #   Overpass fetch + cache + parse
+│   └── build.py              #   ways → segmentize@25m → split at junctions
 ├── scripts/
-│   ├── prebake.py         # canonical R3+R4 orchestrator → outputs/scored_segments.parquet
-│   ├── build_sample_network.py
-│   ├── validate_corridor.py
-│   └── spot_check.py      # factor ground-truth picker
-├── backend/               # FastAPI scoring service + factor modules
-├── frontend/              # Next.js routing UI (submodule)
-├── data/                  # cached external data (OSM, ARC, GDOT) — partially gitignored
-└── outputs/               # generated scored_segments.parquet + sidecar JSON
+│   ├── prebake.py            #   canonical orchestrator → outputs/scored_segments.parquet
+│   ├── validate_corridor.py  #   hour-1 corridor sanity report (walk length, sidewalk shares)
+│   └── spot_check.py         #   factor ground-truth picker (Street View URLs)
+├── backend/
+│   ├── app/                  #   FastAPI scoring + routing service
+│   │   ├── main.py
+│   │   ├── routes.py         #     /health, /score, /route, /gap-reports, /verify-gap, ...
+│   │   ├── scoring.py        #     3-slider model + sub-weights + step-free hard-avoids
+│   │   ├── network.py        #     GraphRouter (Dijkstra over walkable subgraph)
+│   │   ├── segments.py       #     parquet → SegmentStore + route snap
+│   │   ├── directions.py     #     Mapbox Directions wrapper for /score
+│   │   └── gap_reports.py    #     Gemini photo verification + Supabase insert
+│   ├── layers/               #   per-factor scoring modules (one file per factor)
+│   ├── supabase/             #   schema.sql + migrations
+│   ├── Dockerfile
+│   └── requirements.txt
+├── frontend/                 # Next.js 15 + MapLibre UI (regular directory, NOT a submodule)
+│   └── app/
+│       ├── page.tsx          #   Map + sliders + route comparison
+│       ├── report/           #   Submit a gap (photo → /analyze-gap → /submit-gap)
+│       ├── status/           #   Live workflow dashboard
+│       ├── about/
+│       └── components/RealMap.tsx
+├── data/                     # cached external data (OSM, ARC sidewalks, GDOT AADT)
+└── outputs/                  # scored_segments.parquet + sidecar JSON
 ```
+
+`backend/data/` is gitignored — large crash/311 source files live there locally. The canonical baked parquet ships at `outputs/scored_segments.parquet` and is copied into the Docker image at build time.
 
 ## Build the scored corridor
 
 ```bash
-# install Python deps
 pip install -r requirements.txt
 pip install -r backend/requirements.txt
 
-# bake the corridor (full pipeline: OSM → factor scores → parquet)
 python scripts/prebake.py
-# → outputs/scored_segments.parquet
-# → outputs/scored_segments.meta.json   (per-column stats + canary warnings)
+# → outputs/scored_segments.parquet            (30k+ scored segments)
+# → outputs/scored_segments.meta.json          (per-column stats + canary warnings)
+
+# offline iteration without R4 factor modules:
+python scripts/prebake.py --no-r4
+# skip a specific column:
+python scripts/prebake.py --skip crash_norm
 ```
 
-Re-run is idempotent. Sidecar warnings flag any factor module that silently fell back to zeros.
+Re-run is idempotent and atomic (tmpfile → `os.replace`). The sidecar JSON surfaces any factor module that silently fell back to its null default.
 
 ## Run the backend
 
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate    # or .venv\Scripts\activate on Windows
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env                                  # add MAPBOX_ACCESS_TOKEN
+cp .env.example .env                                  # fill in tokens
 uvicorn app.main:app --reload --port 8000
 ```
 
-API docs at http://localhost:8000/docs. Endpoint shape + slider model live in [backend/README.md](backend/README.md) and the local `SCORING.md`.
+API docs at `http://localhost:8000/docs`.
+
+Environment variables (see `backend/.env.example`):
+- `MAPBOX_ACCESS_TOKEN` — required only for `POST /score`. `GET /route` doesn't need it.
+- `SCORED_SEGMENTS_PATH` — defaults to `outputs/scored_segments.parquet` (resolved relative to the repo root). If absent, `GET /route` returns 503.
+- `CORS_ORIGINS` — comma-separated allowed origins.
+- `SUPABASE_URL`, `SUPABASE_KEY` — required for `/gap-reports`, `/analyze-gap`, `/submit-gap`, `/verify-gap`.
+- `GEMINI_API_KEY` (+ optional `GEMINI_MODEL`, default `gemini-2.5-flash`) — required for photo verification.
+- `GAP_PHOTOS_BUCKET` — Supabase Storage bucket name (default `gap-photos`).
+
+Apply `backend/supabase/schema.sql` then `migrations/0001_*.sql` and `0002_*.sql`.
 
 ## Run the frontend
 
 ```bash
-git submodule update --init                           # if you didn't clone with --recurse-submodules
 cd frontend
 npm install
+cp .env.example .env.local                            # fill in tokens
 npm run dev
 ```
 
-Frontend reads `NEXT_PUBLIC_SAFEWALK_API_URL` (default empty → mock mode).
+Environment variables (see `frontend/.env.example`):
+- `NEXT_PUBLIC_SAFEWALK_API_URL` — base URL of the FastAPI backend.
+- `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` — power the live gap-pin map and realtime subscriptions.
+- `NEXT_PUBLIC_MAPBOX_TOKEN` — optional; enables Mapbox geocoding autocomplete. Without it the search box falls back to OSM Nominatim. The map itself uses MapLibre GL JS with OpenFreeMap's `liberty` style and does not require a Mapbox token.
 
 ## Demo corridor
 
-Gillem Logistics Center, Forest Park GA. Bbox + primary destination locked in `corridor.json`. Verified demo OD pair (3 distinct route geometries across slider configs) documented in `SCORING.md`.
+Gillem Logistics Center, Forest Park GA. Bbox + primary destination locked in `corridor.json`:
+
+```json
+{
+  "name": "gillem-logistics-corridor",
+  "bbox": [-84.37, 33.58, -84.29, 33.65],
+  "primary_destination": { "name": "Gillem Logistics Center entrance", "lonlat": [-84.3289, 33.6202] }
+}
+```
+
+The Forest Park / Lake City area is in **Clayton County**, outside the City of Atlanta — so the ATL311 layer is empty here by design and the live `gap_reports` table is the operative hazard source.
